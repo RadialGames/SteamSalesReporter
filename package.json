@@ -1,0 +1,43 @@
+{
+  "name": "steam-sales-analyzer",
+  "version": "1.0.0",
+  "description": "Interactive Steam sales data analyzer with graphs and analysis",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "dev:electron": "electron-vite dev",
+    "build": "vite build",
+    "build:electron": "electron-vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "update-check": "npx npm-check -u",
+    "start": "electron-forge start",
+    "package": "electron-vite build && electron-forge package",
+    "make": "electron-vite build && electron-forge make"
+  },
+  "dependencies": {
+    "chart.js": "^4",
+    "dexie": "^4"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.1",
+    "@electron-forge/maker-deb": "^7.11.1",
+    "@electron-forge/maker-dmg": "^7.11.1",
+    "@electron-forge/maker-squirrel": "^7.11.1",
+    "@electron-forge/maker-zip": "^7.11.1",
+    "@sveltejs/vite-plugin-svelte": "^6",
+    "@tailwindcss/vite": "^4",
+    "@tsconfig/svelte": "^5",
+    "@types/node": "^25",
+    "@types/sql.js": "^1",
+    "electron": "^40",
+    "electron-vite": "^5",
+    "sql.js": "^1",
+    "svelte": "^5",
+    "svelte-check": "^4",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vite": "^7"
+  }
+}
