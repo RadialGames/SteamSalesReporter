@@ -119,8 +119,8 @@ export function getSalesFromDb(filters: Filters): SalesRecord[] {
       packageId: row.package_id,
       countryCode: row.country_code,
       unitsSold: row.units_sold,
-      grossRevenue: row.gross_revenue,
-      netRevenue: row.net_revenue,
+      grossSalesUsd: row.gross_revenue,
+      netSalesUsd: row.net_revenue,
       currency: row.currency
     });
   }
@@ -145,8 +145,8 @@ export function saveSalesData(data: SalesRecord[]): void {
       record.packageId,
       record.countryCode,
       record.unitsSold,
-      record.grossRevenue,
-      record.netRevenue,
+      record.grossSalesUsd ?? 0,
+      record.netSalesUsd ?? 0,
       record.currency
     ]);
   }

@@ -45,8 +45,7 @@ export const errorMessage = writable<string | null>(null);
 export const dailySummary = derived(
   [salesStore, filterStore],
   ([$sales, $filters]) => {
-    // Filter out AppID 0 (Valve placeholder data)
-    let filtered = $sales.filter(s => s.appId !== 0);
+    let filtered = [...$sales];
     
     if ($filters.startDate) {
       filtered = filtered.filter(s => s.date >= $filters.startDate!);
@@ -54,7 +53,7 @@ export const dailySummary = derived(
     if ($filters.endDate) {
       filtered = filtered.filter(s => s.date <= $filters.endDate!);
     }
-    if ($filters.appId) {
+    if ($filters.appId != null) {
       filtered = filtered.filter(s => s.appId === $filters.appId);
     }
     if ($filters.countryCode) {
@@ -70,7 +69,7 @@ export const dailySummary = derived(
         totalUnits: 0
       };
       
-      existing.totalRevenue += sale.netRevenue;
+      existing.totalRevenue += sale.netSalesUsd ?? 0;
       existing.totalUnits += sale.unitsSold;
       byDate.set(sale.date, existing);
     }
@@ -82,8 +81,7 @@ export const dailySummary = derived(
 export const appSummary = derived(
   [salesStore, filterStore],
   ([$sales, $filters]) => {
-    // Filter out AppID 0 (Valve placeholder data)
-    let filtered = $sales.filter(s => s.appId !== 0);
+    let filtered = [...$sales];
     
     if ($filters.startDate) {
       filtered = filtered.filter(s => s.date >= $filters.startDate!);
@@ -105,7 +103,7 @@ export const appSummary = derived(
         totalUnits: 0
       };
       
-      existing.totalRevenue += sale.netRevenue;
+      existing.totalRevenue += sale.netSalesUsd ?? 0;
       existing.totalUnits += sale.unitsSold;
       if (sale.appName) existing.appName = sale.appName;
       byApp.set(sale.appId, existing);
@@ -118,8 +116,7 @@ export const appSummary = derived(
 export const countrySummary = derived(
   [salesStore, filterStore],
   ([$sales, $filters]) => {
-    // Filter out AppID 0 (Valve placeholder data)
-    let filtered = $sales.filter(s => s.appId !== 0);
+    let filtered = [...$sales];
     
     if ($filters.startDate) {
       filtered = filtered.filter(s => s.date >= $filters.startDate!);
@@ -127,7 +124,7 @@ export const countrySummary = derived(
     if ($filters.endDate) {
       filtered = filtered.filter(s => s.date <= $filters.endDate!);
     }
-    if ($filters.appId) {
+    if ($filters.appId != null) {
       filtered = filtered.filter(s => s.appId === $filters.appId);
     }
 
@@ -140,7 +137,7 @@ export const countrySummary = derived(
         totalUnits: 0
       };
       
-      existing.totalRevenue += sale.netRevenue;
+      existing.totalRevenue += sale.netSalesUsd ?? 0;
       existing.totalUnits += sale.unitsSold;
       byCountry.set(sale.countryCode, existing);
     }
@@ -153,8 +150,7 @@ export const countrySummary = derived(
 export const totalStats = derived(
   [salesStore, filterStore],
   ([$sales, $filters]) => {
-    // Filter out AppID 0 (Valve placeholder data)
-    let filtered = $sales.filter(s => s.appId !== 0);
+    let filtered = [...$sales];
     
     if ($filters.startDate) {
       filtered = filtered.filter(s => s.date >= $filters.startDate!);
@@ -162,7 +158,7 @@ export const totalStats = derived(
     if ($filters.endDate) {
       filtered = filtered.filter(s => s.date <= $filters.endDate!);
     }
-    if ($filters.appId) {
+    if ($filters.appId != null) {
       filtered = filtered.filter(s => s.appId === $filters.appId);
     }
     if ($filters.countryCode) {
@@ -170,7 +166,7 @@ export const totalStats = derived(
     }
 
     return {
-      totalRevenue: filtered.reduce((sum, s) => sum + s.netRevenue, 0),
+      totalRevenue: filtered.reduce((sum, s) => sum + (s.netSalesUsd ?? 0), 0),
       totalUnits: filtered.reduce((sum, s) => sum + s.unitsSold, 0),
       totalRecords: filtered.length,
       uniqueApps: new Set(filtered.map(s => s.appId)).size,

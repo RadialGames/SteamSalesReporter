@@ -59,8 +59,6 @@ export interface SalesRecord {
   // Legacy fields for backwards compatibility with charts
   appId: number; // Alias for primaryAppid
   unitsSold: number; // Alias for netUnitsSold or grossUnitsSold
-  netRevenue: number; // Alias for netSalesUsd
-  grossRevenue: number; // Alias for grossSalesUsd
 }
 
 export interface SyncMeta {

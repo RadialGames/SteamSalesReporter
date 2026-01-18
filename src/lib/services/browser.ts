@@ -171,9 +171,7 @@ async function fetchSalesForDate(apiKey: string, date: string, signal?: AbortSig
         
         // Legacy fields for backwards compatibility with charts
         appId: primaryAppid,
-        unitsSold,
-        netRevenue: netSalesUsd,
-        grossRevenue: grossSalesUsd
+        unitsSold
       });
     }
     
@@ -343,7 +341,7 @@ export const browserServices: SalesService = {
   async getSalesFromDb(filters: Filters): Promise<SalesRecord[]> {
     let collection = db.sales.toCollection();
     
-    if (filters.appId) {
+    if (filters.appId != null) {
       collection = db.sales.where('appId').equals(filters.appId);
     }
     

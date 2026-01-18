@@ -65,8 +65,8 @@ export async function fetchSalesDataFromSteam(params: FetchParams): Promise<Sale
           packageId: sale.packageid,
           countryCode: sale.country_code,
           unitsSold: sale.units_sold,
-          grossRevenue: sale.gross_steam_revenue_usd,
-          netRevenue: sale.net_steam_revenue_usd,
+          grossSalesUsd: sale.gross_steam_revenue_usd,
+          netSalesUsd: sale.net_steam_revenue_usd,
           currency: sale.currency || 'USD'
         });
       }
