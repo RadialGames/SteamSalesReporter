@@ -70,8 +70,8 @@ export default tseslint.config(
       'prefer-const': 'off',
       // Svelte reactive statements use expression statements for dependency tracking
       '@typescript-eslint/no-unused-expressions': 'off',
-      // Svelte specific
-      'svelte/no-at-html-tags': 'warn',
+      // Svelte specific - disabled as all {@html} usages are for trusted internal content (icons/emojis)
+      'svelte/no-at-html-tags': 'off',
       // Each blocks must have keys for performance
       'svelte/require-each-key': 'error',
       // Svelte 5 uses regular Map/Set in many cases

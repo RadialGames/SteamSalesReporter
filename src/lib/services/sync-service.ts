@@ -27,7 +27,7 @@ async function saveSalesWithOverwrite(newRecords: SalesRecord[], apiKeyId: strin
       ...record,
       apiKeyId: record.apiKeyId || apiKeyId,
     };
-    // Ensure id (unique key) is set - should already be set by transformSaleItem
+    // Ensure id (unique key) is set - should already be set by fetchSalesForDate
     if (!r.id) {
       // Fallback: generate unique key if not already set
       r.id = generateUniqueKey(r);

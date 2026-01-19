@@ -200,17 +200,23 @@ export function parseMaxId(maxId: string | undefined): number {
 
 /**
  * Generate a unique key from Steam API's unique identifying fields.
- * This creates a deterministic string key that uniquely identifies each sales record
- * according to Steam's documentation. Used as the primary key in the database.
+ * This creates a deterministic string key that uniquely identifies each sales record.
+ * Used as the primary key in the database.
  *
- * Unique identifying fields per Steam API documentation:
- * - partnerid, date, line_item_type (always present)
- * - packageid, bundleid, package_sale_type, key_request_id, base_price, sale_price (for Packages)
+ * IMPORTANT: The key must match the business logic for what constitutes a "unique" record.
+ * Steam's API returns separate records for different key_request_id/base_price/sale_price
+ * combinations, but for reporting purposes we want to aggregate these together.
+ *
+ * Key fields that identify a unique record:
+ * - partnerid, date, line_item_type, platform, country_code, currency (always present)
+ * - packageid, bundleid, package_sale_type (for Packages - NOT key_request_id/prices)
  * - appid, game_item_id (for MicroTxn)
- * - platform, country_code, currency (always present)
- * - combined_discount_id (optional)
+ * - apiKeyId (to separate records from different API keys)
  *
- * We also include apiKeyId to separate records from different API keys.
+ * Excluded fields (vary between what should be the same logical record):
+ * - key_request_id: Different retail key batches should aggregate
+ * - base_price, sale_price: Price changes shouldn't create duplicates
+ * - combined_discount_id: Different discounts shouldn't create duplicates
  *
  * Format: Uses a delimiter-separated format that's deterministic and readable.
  */
@@ -228,22 +234,19 @@ export function generateUniqueKey(record: SalesRecord): string {
   parts.push(record.currency ?? '');
   parts.push(record.apiKeyId);
 
-  // Package-specific fields (use empty string if not present to maintain position)
+  // Package-specific fields (excluding keyRequestId, basePrice, salePrice which vary)
   parts.push(record.packageid?.toString() ?? '');
   parts.push(record.bundleid?.toString() ?? '');
   parts.push(record.packageSaleType ?? '');
-  parts.push(record.keyRequestId?.toString() ?? '');
-  parts.push(record.basePrice ?? '');
-  parts.push(record.salePrice ?? '');
+  // NOTE: keyRequestId, basePrice, salePrice are intentionally excluded
+  // They vary between API responses for what should be the same logical record
 
   // MicroTxn-specific fields
   parts.push(record.appid?.toString() ?? '');
   parts.push(record.gameItemId?.toString() ?? '');
 
-  // Optional fields
-  parts.push(record.combinedDiscountId?.toString() ?? '');
+  // NOTE: combinedDiscountId is intentionally excluded - discounts vary
 
   // Join with a delimiter that won't appear in the data
-  // Using a pipe with special markers to ensure uniqueness
   return parts.join('|');
 }

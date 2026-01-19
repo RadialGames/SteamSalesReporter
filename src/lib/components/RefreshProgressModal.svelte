@@ -236,19 +236,6 @@
   // Check if we're already up to date (0 dates to process)
   let isAlreadyUpToDate = $derived(progress.phase === 'complete' && progress.total === 0);
 
-  // Multi-key progress info
-  let hasMultipleKeys = $derived(progress.totalKeys !== undefined && progress.totalKeys > 1);
-
-  let currentKeyDisplay = $derived.by(() => {
-    if (progress.currentKeyName) {
-      return progress.currentKeyName;
-    }
-    if (progress.currentKeyId) {
-      return `Key ...${progress.currentKeyId.slice(-4)}`;
-    }
-    return null;
-  });
-
   // Segmented progress bar data
   let progressSegments = $derived.by(() => {
     const segments = progress.keySegments;
@@ -373,21 +360,6 @@
           <p class="text-purple-400 text-xs mt-2">Check back later for updates!</p>
         </div>
       {:else}
-        <!-- Multi-key indicator -->
-        {#if hasMultipleKeys && progress.phase !== 'complete' && progress.phase !== 'error' && progress.phase !== 'cancelled'}
-          <div class="mb-4 px-3 py-2 bg-purple-500/20 border border-purple-500/30 rounded-lg">
-            <div class="flex items-center justify-between text-sm">
-              <span class="text-purple-300">
-                <span class="mr-1">&#128273;</span>
-                Syncing: <span class="font-semibold text-white">{currentKeyDisplay}</span>
-              </span>
-              <span class="text-purple-400 text-xs">
-                Key {(progress.currentKeyIndex ?? 0) + 1} of {progress.totalKeys}
-              </span>
-            </div>
-          </div>
-        {/if}
-
         <!-- Progress Bar -->
         <div class="mb-4">
           <div class="flex justify-between text-sm text-purple-300 mb-2">

@@ -53,23 +53,16 @@
     loadingMessage = 'Initializing database...';
     loadingProgress = 1; // Show progress bar immediately
 
-    const { cleanedRecords, duplicateIdsRemoved, duplicateLogicalRecordsRemoved } =
-      await initializeDatabase((message, progress) => {
-        loadingMessage = message;
-        // Map initialization progress (0-100) to first 50% of overall progress
-        loadingProgress = Math.round(progress * 0.5);
-      });
+    const { cleanedRecords, databaseWiped } = await initializeDatabase((message, progress) => {
+      loadingMessage = message;
+      // Map initialization progress (0-100) to first 50% of overall progress
+      loadingProgress = Math.round(progress * 0.5);
+    });
 
-    if (duplicateIdsRemoved > 0) {
-      console.log(`Startup cleanup: removed ${duplicateIdsRemoved} records with duplicate IDs`);
-    }
-    if (duplicateLogicalRecordsRemoved > 0) {
+    if (databaseWiped) {
       console.log(
-        `Startup cleanup: removed ${duplicateLogicalRecordsRemoved} duplicate logical records`
+        `Database wiped due to old data format. ${cleanedRecords} records cleared. Please refresh your data.`
       );
-    }
-    if (cleanedRecords > 0) {
-      console.log(`Startup cleanup: removed ${cleanedRecords} records with missing apiKeyId`);
     }
 
     // Check if API keys exist

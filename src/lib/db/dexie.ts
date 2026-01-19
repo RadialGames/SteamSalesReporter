@@ -3,6 +3,17 @@
  *
  * This module provides persistent storage for sales data and pre-computed aggregates.
  *
+ * ## IMPORTANT: NO MIGRATION PATHS
+ *
+ * This database uses a "nuke and rebuild" strategy instead of migrations.
+ * If the schema changes or old data is detected, the entire database is wiped.
+ *
+ * DO NOT add version() calls for schema migrations. If you need to change the schema:
+ * 1. Update CURRENT_SCHEMA_VERSION constant
+ * 2. The database will be automatically wiped on next startup
+ *
+ * This ensures there is exactly ONE valid data format at any time.
+ *
  * ## Pre-computed Aggregates
  *
  * For large datasets, we pre-compute aggregates after data sync to enable instant
@@ -13,25 +24,31 @@
  * 2. **Web Workers** (workers/): For large datasets during UI interaction
  * 3. **Pre-computed tables** (this file): For initial load and dashboard stats
  *
- * ### When to Recompute Aggregates
- *
- * Call `computeAndStoreAggregates()` after:
- * - Data sync completes (new records added)
- * - Data is cleared or deleted
- * - App determines aggregates are stale via `aggregatesNeedUpdate()`
- *
- * ### Aggregate Tables
- *
- * - `dailyAggregates`: Revenue and units per date
- * - `appAggregates`: Revenue and units per app, with date range
- * - `countryAggregates`: Revenue and units per country
- * - `aggregatesMeta`: Tracks when aggregates were last updated
- *
  * @see src/lib/workers/index.ts for the aggregation strategy documentation
  */
 
 import Dexie, { type EntityTable } from 'dexie';
 import type { SalesRecord, SyncMeta, Filters } from '$lib/services/types';
+
+// ============================================================================
+// Schema Version - INCREMENT THIS TO WIPE DATABASE ON NEXT STARTUP
+// ============================================================================
+
+/**
+ * Current schema version. Increment this number to force a database wipe.
+ *
+ * Version history (for reference only - no migrations exist):
+ * - v1: Initial schema with string-based unique keys
+ *
+ * DO NOT ADD MIGRATION LOGIC. Just increment and let the database wipe.
+ */
+const CURRENT_SCHEMA_VERSION = 1;
+
+/**
+ * Database name includes version to force fresh start on schema changes.
+ * This is intentional - we do NOT support migrations.
+ */
+const DATABASE_NAME = `SteamSalesDB_v3_schema${CURRENT_SCHEMA_VERSION}`;
 
 // ============================================================================
 // Pre-computed aggregate types
@@ -62,11 +79,20 @@ export interface CountryAggregate {
 }
 
 export interface AggregatesMeta {
-  key: string; // 'lastUpdated', 'totalRecords', etc.
+  key: string; // 'lastUpdated', 'totalRecords', 'schemaVersion', etc.
   value: string;
 }
 
-// Extend Dexie with our tables
+// ============================================================================
+// Database Class - SINGLE SCHEMA VERSION ONLY
+// ============================================================================
+
+/**
+ * Dexie database class with a single schema version.
+ *
+ * DO NOT ADD ADDITIONAL version() CALLS.
+ * If you need to change the schema, increment CURRENT_SCHEMA_VERSION instead.
+ */
 class SteamSalesDB extends Dexie {
   sales!: EntityTable<SalesRecord, 'id'>;
   syncMeta!: EntityTable<SyncMeta, 'key'>;
@@ -76,61 +102,22 @@ class SteamSalesDB extends Dexie {
   aggregatesMeta!: EntityTable<AggregatesMeta, 'key'>;
 
   constructor() {
-    // Changed database name in version 5 to force fresh start due to primary key type change
-    super('SteamSalesDB_v2');
+    super(DATABASE_NAME);
 
-    // Version 1: Original schema
+    // =========================================================================
+    // SINGLE SCHEMA VERSION - DO NOT ADD MORE VERSIONS
+    //
+    // If you need to change the schema:
+    // 1. Increment CURRENT_SCHEMA_VERSION at the top of this file
+    // 2. The database name will change, causing a fresh start
+    //
+    // DO NOT add .version(2), .version(3), etc.
+    // DO NOT add .upgrade() handlers
+    // DO NOT try to migrate data between versions
+    // =========================================================================
     this.version(1).stores({
-      sales: '++id, date, appId, packageId, countryCode, [date+appId+packageId+countryCode]',
-      syncMeta: 'key',
-    });
-
-    // Version 2: Add pre-computed aggregate tables
-    this.version(2).stores({
-      sales: '++id, date, appId, packageId, countryCode, [date+appId+packageId+countryCode]',
-      syncMeta: 'key',
-      dailyAggregates: 'date',
-      appAggregates: 'appId',
-      countryAggregates: 'countryCode',
-      aggregatesMeta: 'key',
-    });
-
-    // Version 3: Add apiKeyId index for multi-key support
-    this.version(3).stores({
-      sales:
-        '++id, date, appId, packageId, countryCode, apiKeyId, [date+appId+packageId+countryCode]',
-      syncMeta: 'key',
-      dailyAggregates: 'date',
-      appAggregates: 'appId',
-      countryAggregates: 'countryCode',
-      aggregatesMeta: 'key',
-    });
-
-    // Version 4: Add unique constraint on id and update composite unique key to include apiKeyId
-    this.version(4).stores({
-      sales:
-        '++id, date, appId, packageId, countryCode, apiKeyId, [date+appId+packageId+countryCode+apiKeyId]',
-      syncMeta: 'key',
-      dailyAggregates: 'date',
-      appAggregates: 'appId',
-      countryAggregates: 'countryCode',
-      aggregatesMeta: 'key',
-    });
-
-    // Version 5: Delete sales table to prepare for schema change
-    // Dexie doesn't support changing primary key type, so we must delete and recreate
-    this.version(5).stores({
-      // Remove sales table (this deletes it)
-      syncMeta: 'key',
-      dailyAggregates: 'date',
-      appAggregates: 'appId',
-      countryAggregates: 'countryCode',
-      aggregatesMeta: 'key',
-    });
-
-    // Version 6: Recreate sales table with unique key hash as primary key
-    // This ensures records with the same Steam API identifying fields automatically overwrite
-    this.version(6).stores({
+      // Primary key 'id' is a string generated by generateUniqueKey()
+      // This ensures records with the same identifying fields overwrite each other
       sales:
         'id, date, appId, packageId, countryCode, apiKeyId, [date+appId+packageId+countryCode+apiKeyId]',
       syncMeta: 'key',
@@ -145,323 +132,148 @@ class SteamSalesDB extends Dexie {
 export const db = new SteamSalesDB();
 
 // ============================================================================
-// Database Initialization & Cleanup
+// Database Initialization & Validation
 // ============================================================================
 
 /** Progress callback for database operations */
 export type DbProgressCallback = (message: string, progress: number) => void;
 
 /**
- * Clean up duplicate IDs in the database.
- * In IndexedDB, primary keys should be unique, but this function ensures
- * that if any duplicates exist (due to data corruption or migration issues),
- * we keep only the first occurrence of each ID.
- * Returns the number of duplicate records removed.
+ * Expected number of pipe-separated parts in a valid unique key.
+ * See generateUniqueKey() in steam-transform.ts for the canonical format.
+ *
+ * A valid key has exactly 12 parts:
+ * partnerid|date|lineItemType|platform|countryCode|currency|apiKeyId|packageid|bundleid|packageSaleType|appid|gameItemId
  */
-export async function cleanupDuplicateIds(onProgress?: DbProgressCallback): Promise<number> {
-  onProgress?.('Checking for duplicate IDs...', 0);
+const EXPECTED_KEY_PARTS = 12;
 
-  const totalCount = await db.sales.count();
+/**
+ * Check if a record ID matches the current valid format.
+ * Returns false if the ID is in an old/invalid format.
+ */
+function isValidKeyFormat(id: string | number | undefined): boolean {
+  if (typeof id !== 'string') return false;
 
-  if (totalCount === 0) {
-    onProgress?.('No duplicates found', 100);
-    return 0;
-  }
+  const parts = id.split('|');
 
-  onProgress?.(`Scanning ${totalCount.toLocaleString()} records for duplicate IDs...`, 5);
+  // Must have exactly EXPECTED_KEY_PARTS parts
+  if (parts.length !== EXPECTED_KEY_PARTS) return false;
 
-  // In IndexedDB, primary keys are automatically unique, so we shouldn't find duplicates.
-  // However, we'll scan to be safe and also check for duplicate logical records.
-  const SCAN_BATCH_SIZE = 10000;
-  const seenIds = new Set<string | number>();
-  const duplicateIds: (string | number)[] = [];
-  let offset = 0;
+  // Basic sanity checks on expected fields
+  // Part 1 (index 1) should be a date in YYYY/MM/DD format
+  const datePart = parts[1];
+  if (!/^\d{4}\/\d{2}\/\d{2}$/.test(datePart)) return false;
 
-  while (offset < totalCount) {
-    const batch = await db.sales.offset(offset).limit(SCAN_BATCH_SIZE).toArray();
-
-    for (const record of batch) {
-      if (record.id !== undefined) {
-        if (seenIds.has(record.id)) {
-          // Found a duplicate ID (shouldn't happen, but handle it)
-          duplicateIds.push(record.id);
-        } else {
-          seenIds.add(record.id);
-        }
-      }
-    }
-
-    offset += batch.length;
-    const scanProgress = 5 + Math.round((offset / totalCount) * 15);
-    onProgress?.(
-      `Scanning... ${offset.toLocaleString()} / ${totalCount.toLocaleString()}`,
-      scanProgress
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    if (batch.length < SCAN_BATCH_SIZE) break;
-  }
-
-  if (duplicateIds.length > 0) {
-    console.warn(
-      `Found ${duplicateIds.length} duplicate IDs (this shouldn't happen with IndexedDB primary keys)`
-    );
-    // Delete duplicates, keeping the first occurrence
-    // Since IndexedDB enforces uniqueness, we'll delete all but one
-    const idsToDelete = duplicateIds.slice(1); // Keep first, delete rest
-    await db.sales.bulkDelete(idsToDelete);
-    onProgress?.('Removed duplicate IDs', 100);
-    return idsToDelete.length;
-  }
-
-  onProgress?.('No duplicate IDs found', 100);
-  return 0;
+  return true;
 }
 
 /**
- * Clean up duplicate logical records (same business key).
- * Finds records with the same date+appId+packageId+countryCode+apiKeyId
- * and keeps only one (the first occurrence).
- * Returns the number of duplicate records removed.
+ * Check if the database contains any records with old/invalid key formats.
+ * Returns true if old data is detected and database should be wiped.
  */
-export async function cleanupDuplicateLogicalRecords(
-  onProgress?: DbProgressCallback
-): Promise<number> {
-  onProgress?.('Checking for duplicate logical records...', 0);
+async function hasOldFormatData(): Promise<boolean> {
+  const sampleSize = 100;
+  const samples = await db.sales.limit(sampleSize).toArray();
 
-  const totalCount = await db.sales.count();
+  if (samples.length === 0) return false;
 
-  if (totalCount === 0) {
-    onProgress?.('No duplicates found', 100);
-    return 0;
-  }
-
-  onProgress?.(`Scanning ${totalCount.toLocaleString()} records for duplicates...`, 5);
-
-  const SCAN_BATCH_SIZE = 10000;
-  const seenKeys = new Map<string, string | number>(); // business key -> first record ID
-  const duplicateIds: (string | number)[] = [];
-  let offset = 0;
-
-  while (offset < totalCount) {
-    const batch = await db.sales.offset(offset).limit(SCAN_BATCH_SIZE).toArray();
-
-    for (const record of batch) {
-      if (record.id === undefined) continue;
-
-      // Create business key: date+appId+packageId+countryCode+apiKeyId
-      const businessKey = `${record.date}|${record.appId}|${record.packageid ?? 0}|${record.countryCode}|${record.apiKeyId || ''}`;
-
-      const existingId = seenKeys.get(businessKey);
-      if (existingId !== undefined) {
-        // Found a duplicate logical record - mark this one for deletion
-        duplicateIds.push(record.id);
-      } else {
-        // First occurrence - keep it
-        seenKeys.set(businessKey, record.id);
-      }
-    }
-
-    offset += batch.length;
-    const scanProgress = 5 + Math.round((offset / totalCount) * 40);
-    onProgress?.(
-      `Scanning... ${offset.toLocaleString()} / ${totalCount.toLocaleString()}`,
-      scanProgress
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    if (batch.length < SCAN_BATCH_SIZE) break;
-  }
-
-  if (duplicateIds.length > 0) {
-    console.log(`Found ${duplicateIds.length} duplicate logical records`);
-
-    // Delete duplicates in batches
-    const DELETE_BATCH_SIZE = 5000;
-    let deleted = 0;
-
-    for (let i = 0; i < duplicateIds.length; i += DELETE_BATCH_SIZE) {
-      const batch = duplicateIds.slice(i, i + DELETE_BATCH_SIZE);
-      await db.sales.bulkDelete(batch);
-      deleted += batch.length;
-
-      const deleteProgress = 45 + Math.round((deleted / duplicateIds.length) * 10);
-      onProgress?.(
-        `Removing duplicates... ${deleted.toLocaleString()} / ${duplicateIds.length.toLocaleString()}`,
-        deleteProgress
-      );
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-
-    console.log(`Cleaned up ${duplicateIds.length} duplicate logical records`);
-    onProgress?.('Duplicate cleanup complete', 100);
-    return duplicateIds.length;
-  }
-
-  onProgress?.('No duplicate logical records found', 100);
-  return 0;
-}
-
-/**
- * Clean up invalid records on startup.
- * Deletes any sales records that don't have a valid apiKeyId.
- * Returns the number of records deleted.
- */
-export async function cleanupInvalidRecords(onProgress?: DbProgressCallback): Promise<number> {
-  onProgress?.('Counting records...', 5);
-
-  // First get total count for context
-  const totalCount = await db.sales.count();
-
-  if (totalCount === 0) {
-    onProgress?.('Database ready', 100);
-    return 0;
-  }
-
-  onProgress?.(`Scanning ${totalCount.toLocaleString()} records...`, 10);
-
-  // Yield to let UI update
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  // Find invalid records by scanning in batches for progress feedback
-  // We use pagination to allow yielding to the event loop for UI updates
-  const SCAN_BATCH_SIZE = 10000;
-  const invalidIds: (string | number)[] = [];
-  let offset = 0;
-
-  while (offset < totalCount) {
-    const batch = await db.sales.offset(offset).limit(SCAN_BATCH_SIZE).toArray();
-
-    for (const record of batch) {
-      if (!record.apiKeyId || record.apiKeyId.trim() === '') {
-        if (record.id !== undefined) {
-          invalidIds.push(record.id);
-        }
-      }
-    }
-
-    offset += batch.length;
-
-    // Update progress and yield to event loop
-    const scanProgress = 10 + Math.round((offset / totalCount) * 20);
-    onProgress?.(
-      `Scanning... ${offset.toLocaleString()} / ${totalCount.toLocaleString()}`,
-      scanProgress
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    if (batch.length < SCAN_BATCH_SIZE) break;
-  }
-
-  onProgress?.('Scan complete', 30);
-
-  if (invalidIds.length > 0) {
-    console.log(`Found ${invalidIds.length} invalid records (missing apiKeyId)`);
-
-    // Delete in batches with progress
-    const DELETE_BATCH_SIZE = 5000;
-    let deleted = 0;
-
-    for (let i = 0; i < invalidIds.length; i += DELETE_BATCH_SIZE) {
-      const batch = invalidIds.slice(i, i + DELETE_BATCH_SIZE);
-      await db.sales.bulkDelete(batch);
-      deleted += batch.length;
-
-      const deleteProgress = 30 + Math.round((deleted / invalidIds.length) * 15);
-      onProgress?.(
-        `Cleaning up... ${deleted.toLocaleString()} / ${invalidIds.length.toLocaleString()}`,
-        deleteProgress
-      );
-
-      // Yield to let UI update
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-
-    console.log(`Cleaned up ${invalidIds.length} invalid records`);
-
-    // Recompute aggregates after cleanup
-    const remainingCount = await db.sales.count();
-    if (remainingCount > 0) {
-      onProgress?.('Recomputing aggregates...', 50);
-      await computeAndStoreAggregates((msg, prog) => {
-        // Map aggregate progress (0-100) to our range (50-95)
-        const mappedProgress = 50 + Math.round(prog * 0.45);
-        onProgress?.(msg, mappedProgress);
+  for (const record of samples) {
+    if (!isValidKeyFormat(record.id)) {
+      console.warn('Detected old format data:', {
+        id: record.id,
+        type: typeof record.id,
+        parts: typeof record.id === 'string' ? record.id.split('|').length : 'N/A',
       });
-    } else {
-      await clearAggregates();
+      return true;
     }
   }
 
-  onProgress?.('Database ready', 100);
-  return invalidIds.length;
+  return false;
+}
+
+/**
+ * Delete all old database versions to clean up storage.
+ * This removes any databases from previous schema versions.
+ */
+async function deleteOldDatabases(): Promise<void> {
+  // Known old database names from previous versions
+  const oldDatabaseNames = [
+    'SteamSalesDB',
+    'SteamSalesDB_v2',
+    // Add any other old database names here if needed
+  ];
+
+  for (const name of oldDatabaseNames) {
+    try {
+      await Dexie.delete(name);
+      console.log(`Deleted old database: ${name}`);
+    } catch {
+      // Ignore errors - database may not exist
+    }
+  }
 }
 
 /**
  * Initialize the database - should be called on app startup.
- * Performs cleanup of duplicate IDs, duplicate logical records, and invalid records.
+ *
+ * This function:
+ * 1. Deletes any old database versions
+ * 2. Opens the current database
+ * 3. Validates that all data is in the current format
+ * 4. If old format data is detected, wipes the entire database
+ *
+ * NO MIGRATION LOGIC - just validation and optional wipe.
  */
 export async function initializeDatabase(onProgress?: DbProgressCallback): Promise<{
   cleanedRecords: number;
-  duplicateIdsRemoved: number;
-  duplicateLogicalRecordsRemoved: number;
+  databaseWiped: boolean;
 }> {
   onProgress?.('Opening database...', 0);
 
-  // Try to open the database, handle primary key change errors
+  // Step 1: Delete old database versions
+  onProgress?.('Cleaning up old databases...', 5);
+  await deleteOldDatabases();
+
+  // Step 2: Open the current database
+  onProgress?.('Opening database...', 10);
   try {
     await db.open();
-  } catch (error: unknown) {
-    // If we get an UpgradeError about changing primary key, delete and recreate the database
-    const isDexieUpgradeError =
-      error instanceof Error &&
-      error.name === 'UpgradeError' &&
-      error.message?.includes('changing primary key');
-    if (isDexieUpgradeError) {
-      console.warn('Primary key change detected. Deleting and recreating database...');
-      onProgress?.('Recreating database with new schema...', 5);
-
-      // Close the database
-      db.close();
-
-      // Delete the database
-      await db.delete();
-
-      // Recreate it
-      await db.open();
-
-      onProgress?.('Database recreated successfully', 10);
-    } else {
-      // Re-throw other errors
-      throw error;
-    }
+  } catch (error) {
+    console.error('Failed to open database:', error);
+    // If we can't open, try to delete and recreate
+    onProgress?.('Recreating database...', 15);
+    db.close();
+    await db.delete();
+    await db.open();
   }
 
-  onProgress?.('Checking for duplicate IDs...', 2);
-  const duplicateIdsRemoved = await cleanupDuplicateIds((msg, prog) => {
-    // Map progress 0-100 to 2-15
-    const mappedProgress = 2 + Math.round(prog * 0.13);
-    onProgress?.(msg, mappedProgress);
-  });
+  // Step 3: Check for old format data
+  onProgress?.('Validating data format...', 20);
+  const hasOldData = await hasOldFormatData();
 
-  onProgress?.('Checking for duplicate logical records...', 15);
-  const duplicateLogicalRecordsRemoved = await cleanupDuplicateLogicalRecords((msg, prog) => {
-    // Map progress 0-100 to 15-40
-    const mappedProgress = 15 + Math.round(prog * 0.25);
-    onProgress?.(msg, mappedProgress);
-  });
+  if (hasOldData) {
+    // Step 4: Wipe the database if old data detected
+    console.warn('Old format data detected. Wiping database...');
+    onProgress?.('Old data format detected - clearing database...', 30);
 
-  onProgress?.('Checking database integrity...', 40);
-  const cleanedRecords = await cleanupInvalidRecords((msg, prog) => {
-    // Map progress 0-100 to 40-100
-    const mappedProgress = 40 + Math.round(prog * 0.6);
-    onProgress?.(msg, mappedProgress);
-  });
+    const recordCount = await db.sales.count();
+    await clearAllData();
+    await clearAggregates();
+
+    onProgress?.('Database cleared. Please refresh your data.', 100);
+
+    return {
+      cleanedRecords: recordCount,
+      databaseWiped: true,
+    };
+  }
+
+  // Step 5: Database is valid
+  onProgress?.('Database ready', 100);
 
   return {
-    cleanedRecords,
-    duplicateIdsRemoved,
-    duplicateLogicalRecordsRemoved,
+    cleanedRecords: 0,
+    databaseWiped: false,
   };
 }
 

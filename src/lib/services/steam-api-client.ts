@@ -2,6 +2,7 @@
 // Uses Vite proxy for API calls
 
 import type { SalesRecord, SteamDetailedSalesResponse, SteamChangedDatesResponse } from './types';
+import { generateUniqueKey } from '$lib/shared/steam-transform';
 
 // Custom error for cancelled operations
 export class SyncCancelledError extends Error {
@@ -135,7 +136,7 @@ export async function fetchSalesForDate(
         ? keyRequestInfoMap.get(item.key_request_id)
         : null;
 
-      dateSales.push({
+      const record: SalesRecord = {
         // API Key association (required)
         apiKeyId,
 
@@ -197,7 +198,12 @@ export async function fetchSalesForDate(
         // Legacy fields for backwards compatibility with charts
         appId: primaryAppid,
         unitsSold,
-      });
+      };
+
+      // Generate unique key as the primary key ID
+      record.id = generateUniqueKey(record);
+
+      dateSales.push(record);
     }
 
     // Check if there's more data
