@@ -194,6 +194,7 @@ async function hasOldFormatData(): Promise<boolean> {
 /**
  * Delete all old database versions to clean up storage.
  * This removes any databases from previous schema versions.
+ * Only logs when a database actually exists and is deleted.
  */
 async function deleteOldDatabases(): Promise<void> {
   // Known old database names from previous versions
@@ -203,12 +204,32 @@ async function deleteOldDatabases(): Promise<void> {
     // Add any other old database names here if needed
   ];
 
+  // Get list of existing databases (modern browsers only)
+  let existingDatabases: Set<string> | null = null;
+  if (typeof indexedDB.databases === 'function') {
+    try {
+      const databases = await indexedDB.databases();
+      existingDatabases = new Set(
+        databases.map((dbInfo) => dbInfo.name).filter(Boolean) as string[]
+      );
+    } catch {
+      // Fall back to attempting delete without checking
+      existingDatabases = null;
+    }
+  }
+
   for (const name of oldDatabaseNames) {
     try {
-      await Dexie.delete(name);
-      console.log(`Deleted old database: ${name}`);
+      // Only attempt delete if we can't check existence, or if it exists
+      if (existingDatabases === null || existingDatabases.has(name)) {
+        await Dexie.delete(name);
+        // Only log if we knew it existed (otherwise we might be deleting nothing)
+        if (existingDatabases?.has(name)) {
+          console.log(`Deleted old database: ${name}`);
+        }
+      }
     } catch {
-      // Ignore errors - database may not exist
+      // Ignore errors - database may not exist or be in use
     }
   }
 }

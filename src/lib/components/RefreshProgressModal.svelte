@@ -248,6 +248,8 @@
     let cumulative = 0;
 
     // Build segment data with widths and fill amounts
+    // IMPORTANT: Process all Phase 1 (new) segments first, then all Phase 2 (reprocess) segments
+    // This matches the actual processing order in sync-orchestrator.ts
     const result: {
       keyName: string;
       type: 'new' | 'reprocess';
@@ -256,8 +258,8 @@
       count: number; // number of dates in this segment
     }[] = [];
 
+    // PHASE 1: Add all "new" segments for all keys first
     for (const seg of segments) {
-      // New dates segment
       if (seg.newDates > 0) {
         result.push({
           keyName: seg.keyName,
@@ -268,8 +270,10 @@
         });
         cumulative += seg.newDates;
       }
+    }
 
-      // Reprocess dates segment
+    // PHASE 2: Add all "reprocess" segments for all keys
+    for (const seg of segments) {
       if (seg.reprocessDates > 0) {
         result.push({
           keyName: seg.keyName,
@@ -367,7 +371,20 @@
             <span>{percentage}%</span>
           </div>
 
-          {#if progressSegments && progressSegments.length > 0}
+          {#if progress.phase === 'saving'}
+            <!-- Saving/Aggregates Progress Bar -->
+            <div class="h-4 bg-purple-900/50 rounded-full overflow-hidden">
+              <div
+                class="h-full bg-gradient-to-r {phaseColor} transition-all duration-300 ease-out rounded-full relative"
+                style="width: {percentage}%"
+              >
+                <div class="absolute inset-0 bg-white/20 animate-pulse"></div>
+              </div>
+            </div>
+            <div class="text-xs text-purple-400 mt-2 text-center">
+              {progress.message || 'Computing aggregates...'}
+            </div>
+          {:else if progressSegments && progressSegments.length > 0}
             <!-- Segmented Progress Bar -->
             <div class="h-6 bg-purple-900/50 rounded-full overflow-hidden flex relative">
               {#each progressSegments as segment, i (i)}
@@ -459,14 +476,18 @@
         <div class="grid grid-cols-2 gap-3 mb-4">
           <div class="glass-card p-3 text-center">
             <div class="text-2xl font-bold text-purple-200">
-              {#if progress.phase === 'dates'}
+              {#if progress.phase === 'saving'}
+                {percentage}%
+              {:else if progress.phase === 'dates'}
                 {progress.current.toLocaleString()}/{progress.total.toLocaleString()}
               {:else}
                 {progress.current.toLocaleString()}/{progress.total.toLocaleString()}
               {/if}
             </div>
             <div class="text-xs text-purple-400">
-              {#if progress.phase === 'dates'}
+              {#if progress.phase === 'saving'}
+                Aggregates computed
+              {:else if progress.phase === 'dates'}
                 Keys checked
               {:else}
                 Dates processed
@@ -577,6 +598,8 @@
             {:else if progress.phase === 'fetch' || progress.phase === 'sales'}
               &#128161; Tip: New dates are processed first. Cancel anytime - your data is saved
               incrementally!
+            {:else if progress.phase === 'saving'}
+              &#128161; Computing summaries for faster dashboard loading...
             {:else}
               &#128161; Using highwatermark to check for new data since last sync...
             {/if}

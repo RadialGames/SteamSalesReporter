@@ -1,6 +1,7 @@
 // API key storage operations for browser mode
 // Uses localStorage for persistence
 
+import { v4 as uuidv4 } from 'uuid';
 import type { ApiKeyInfo } from './types';
 
 // Storage keys
@@ -10,7 +11,7 @@ const HIGHWATERMARK_PREFIX = 'highwatermark_'; // Per-key highwatermarks: highwa
 
 // Helper to generate UUID
 function generateId(): string {
-  return crypto.randomUUID();
+  return uuidv4();
 }
 
 // Helper to get last 4 chars of key for display

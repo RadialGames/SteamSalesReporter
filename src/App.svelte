@@ -5,7 +5,11 @@
   import RefreshProgressModal from '$lib/components/RefreshProgressModal.svelte';
   import UnicornLoader from '$lib/components/UnicornLoader.svelte';
   import { services } from '$lib/services';
-  import { initializeDatabase } from '$lib/db/dexie';
+  import {
+    initializeDatabase,
+    aggregatesNeedUpdate,
+    computeAndStoreAggregates,
+  } from '$lib/db/dexie';
   import { salesStore, settingsStore, isLoading, errorMessage } from '$lib/stores/sales';
   import type { ApiKeyInfo } from '$lib/services/types';
   import {
@@ -63,6 +67,18 @@
       console.log(
         `Database wiped due to old data format. ${cleanedRecords} records cleared. Please refresh your data.`
       );
+    }
+
+    // Check if aggregates need to be recomputed (safety net for pause/cancel/crash scenarios)
+    // This ensures dashboard data is always accurate even if sync was interrupted
+    if (await aggregatesNeedUpdate()) {
+      loadingMessage = 'Updating aggregates...';
+      loadingProgress = 52;
+      await computeAndStoreAggregates((message, progress) => {
+        loadingMessage = message;
+        // Map aggregate progress (0-100) to range 52-54%
+        loadingProgress = 52 + Math.round(progress * 0.02);
+      });
     }
 
     // Check if API keys exist

@@ -180,12 +180,25 @@
           signal: controller.signal,
         })
           .then(async (groups) => {
-            // CRITICAL: Use JSON parse/stringify to strip Svelte proxies from nested records
-            // Without this, accessing record properties in tight loops is extremely slow (~8 seconds)
-            const plainGroups = JSON.parse(JSON.stringify(groups)) as typeof groups;
+            // CRITICAL: Strip Svelte proxies from nested records for performance
+            // Worker path already returns plain objects (postMessage serializes them)
+            // Sync path also creates plain objects, but we need to ensure the groups array itself is plain
+            // Use a memory-efficient approach that processes groups individually to avoid
+            // exceeding JavaScript's maximum string length limit
+            const plainGroups: typeof groups = groups.map((group) => {
+              // Create a plain copy of the group
+              const plainGroup = {
+                id: group.id,
+                name: group.name,
+                records: group.records.map((record) => ({ ...record })),
+                hasRevenue: group.hasRevenue,
+                launchMetrics: group.launchMetrics,
+              };
+              return plainGroup;
+            });
 
             // Compute launch metrics if not already computed (worker path doesn't compute them)
-            // This happens AFTER JSON serialization, so records are plain objects = fast
+            // This happens AFTER stripping proxies, so records are plain objects = fast
             for (const group of plainGroups) {
               if (!group.launchMetrics) {
                 group.launchMetrics = calculateLaunchDays(group.records, 365);

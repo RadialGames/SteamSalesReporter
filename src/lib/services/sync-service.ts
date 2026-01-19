@@ -2,7 +2,7 @@
 // Handles batch processing, progress reporting, and database persistence
 
 import type { SalesRecord, ProgressCallback, FetchParams, FetchResult } from './types';
-import { db, computeAndStoreAggregates } from '$lib/db/dexie';
+import { db } from '$lib/db/dexie';
 import { generateUniqueKey } from '$lib/shared/steam-transform';
 import { sortDatesByPriority } from '$lib/utils/dates';
 import { fetchSalesForDate, fetchChangedDates, SyncCancelledError } from './steam-api-client';
@@ -214,29 +214,11 @@ export async function fetchSalesData(params: FetchParams): Promise<FetchResult> 
     onDateProcessed
   );
 
-  // Phase 4: Compute aggregates for fast queries
-  // This pre-computes summaries so the UI doesn't have to iterate all records
-  if (totalRecordsSaved > 0) {
-    onProgress?.({
-      phase: 'saving',
-      message: 'Computing aggregates for faster loading...',
-      current: 0,
-      total: 100,
-      recordsFetched: totalRecordsSaved,
-    });
+  // NOTE: Aggregate computation has been moved to sync-orchestrator.ts
+  // to run only ONCE at the end of the entire sync (not after each key/phase)
+  // This prevents the 30-60 second delays between key/phase transitions
 
-    await computeAndStoreAggregates((message, progress) => {
-      onProgress?.({
-        phase: 'saving',
-        message,
-        current: progress,
-        total: 100,
-        recordsFetched: totalRecordsSaved,
-      });
-    });
-  }
-
-  // Phase 5: Data is already saved - just report completion
+  // Phase 4: Data is already saved - just report completion
   // NOTE: We do NOT save the highwatermark here!
   // The caller must save it AFTER this function returns successfully.
 

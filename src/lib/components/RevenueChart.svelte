@@ -12,7 +12,7 @@
     Legend,
     Filler,
   } from 'chart.js';
-  import { dailySummary } from '$lib/stores/sales';
+  import { dailySummary, salesStore } from '$lib/stores/sales';
   import { ToggleGroup } from './ui';
 
   Chart.register(
@@ -26,6 +26,12 @@
     Legend,
     Filler
   );
+
+  interface Props {
+    filterPreLaunch?: boolean; // Filter out data points before first sale (launch day)
+  }
+
+  let { filterPreLaunch = false }: Props = $props();
 
   let canvas: HTMLCanvasElement = $state.raw(null!);
   let chart: Chart | null = null;
@@ -43,7 +49,39 @@
       chart.destroy();
     }
 
-    const rawData = $dailySummary;
+    let rawData = $dailySummary;
+
+    // Filter out data points before the first sale (launch day)
+    // This removes activations (free developer copies, press releases) that occur before launch
+    // Uses the same logic as calculateLaunchDays in launch-metrics.ts
+    if (filterPreLaunch && rawData.length > 0) {
+      // Find launch day: earliest date with netSalesUsd > 0
+      // This matches the logic in calculateLaunchDays
+      const sales = $salesStore;
+      let launchDate: string | null = null;
+      let launchTime = Infinity;
+
+      for (let i = 0; i < sales.length; i++) {
+        const record = sales[i];
+        if (record.netSalesUsd && record.netSalesUsd > 0) {
+          const ts = new Date(record.date).getTime();
+          if (ts < launchTime) {
+            launchTime = ts;
+            launchDate = record.date;
+          }
+        }
+      }
+
+      if (launchDate) {
+        // Filter dailySummary to only include dates >= launch date
+        // This ensures we start from the launch day, excluding pre-launch activations
+        rawData = rawData.filter((d) => {
+          const dateTime = new Date(d.date).getTime();
+          return dateTime >= launchTime;
+        });
+      }
+      // If no launchDate found, there's no revenue data, so show all data
+    }
 
     // Calculate cumulative data if needed
     let chartData: number[];
@@ -167,8 +205,10 @@
   // Recreate chart when data or toggles change
   $effect(() => {
     $dailySummary;
+    $salesStore; // Also watch salesStore for filterPreLaunch logic
     showRevenue;
     isCumulative;
+    filterPreLaunch;
     if (canvas) {
       createChart();
     }

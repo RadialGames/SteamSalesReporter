@@ -186,7 +186,7 @@
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <!-- Revenue Over Time (Full Width on mobile, half on desktop) -->
         <div class="lg:col-span-2">
-          <RevenueChart />
+          <RevenueChart filterPreLaunch={true} />
         </div>
 
         <!-- SKU Comparison -->

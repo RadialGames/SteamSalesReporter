@@ -3,6 +3,7 @@
 
 import type { FetchProgress, ApiKeyInfo } from './types';
 import { services } from './index';
+import { computeAndStoreAggregates } from '$lib/db/dexie';
 
 // Session state for tracking sync progress across pause/resume
 // This is cleared when the modal is closed, ensuring fresh starts work correctly
@@ -314,6 +315,31 @@ export async function runSync(
         }
       }
     }
+  }
+
+  // FINAL PHASE: Compute aggregates ONCE at the very end of sync
+  // This was previously called after each key/phase in fetchSalesData,
+  // causing 30-60 second delays between transitions
+  if (sessionState.totalRecordsFetched > 0) {
+    callbacks.onProgress({
+      phase: 'saving',
+      message: 'Computing aggregates for faster loading...',
+      current: 0,
+      total: 100,
+      recordsFetched: sessionState.totalRecordsFetched,
+      keySegments: sessionState.keySegments,
+    });
+
+    await computeAndStoreAggregates((message, progress) => {
+      callbacks.onProgress({
+        phase: 'saving',
+        message,
+        current: progress,
+        total: 100,
+        recordsFetched: sessionState.totalRecordsFetched,
+        keySegments: sessionState.keySegments,
+      });
+    });
   }
 
   return { totalRecords: sessionState.totalRecordsFetched };
