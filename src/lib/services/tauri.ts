@@ -2,7 +2,16 @@
 // Uses Tauri invoke to communicate with Rust backend
 
 import { invoke } from '@tauri-apps/api/core';
-import type { SalesService, SalesRecord, FetchParams, FetchResult, Filters, ApiKeyInfo, ChangedDatesResult, DataProgressCallback } from './types';
+import type {
+  SalesService,
+  SalesRecord,
+  FetchParams,
+  FetchResult,
+  Filters,
+  ApiKeyInfo,
+  ChangedDatesResult,
+  DataProgressCallback,
+} from './types';
 
 export const tauriServices: SalesService = {
   // Multi-key API management
@@ -68,5 +77,5 @@ export const tauriServices: SalesService = {
   async getExistingDates(apiKeyId: string): Promise<Set<string>> {
     const dates: string[] = await invoke('get_existing_dates', { apiKeyId });
     return new Set(dates);
-  }
+  },
 };

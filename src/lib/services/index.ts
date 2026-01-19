@@ -11,7 +11,7 @@ export type { DailySummary, AppSummary, CountrySummary } from './types';
  * - API key management
  * - Steam API data fetching
  * - Local database operations
- * 
+ *
  * Uses IndexedDB for storage and fetch API for network requests
  */
 export const services: SalesService = browserServices;

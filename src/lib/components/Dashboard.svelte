@@ -7,6 +7,7 @@
   import SalesTable from './SalesTable.svelte';
   import LaunchComparison from './LaunchComparison.svelte';
   import PackageMetrics from './PackageMetrics.svelte';
+  import { ToggleGroup } from './ui';
   import { salesStore } from '$lib/stores/sales';
   import type { ApiKeyInfo } from '$lib/services/types';
 
@@ -30,11 +31,11 @@
       </h2>
       <p class="text-purple-200 mb-6 max-w-md mx-auto">
         {#if apiKeys.length === 0}
-          Get started by clicking the <strong>"Settings"</strong> button above to add your Steam API key. 
+          Get started by clicking the <strong>"Settings"</strong> button above to add your Steam API key.
           Once configured, you'll be able to fetch and analyze your sales data.
         {:else}
-          Click the <strong>"Refresh Data"</strong> button above to fetch your Steam sales data 
-          and start exploring your financial analytics.
+          Click the <strong>"Refresh Data"</strong> button above to fetch your Steam sales data and start
+          exploring your financial analytics.
         {/if}
       </p>
       <div class="flex justify-center gap-2 flex-wrap">
@@ -54,34 +55,17 @@
     </div>
   {:else}
     <!-- Top Level Tab Navigation (only shown when data exists) -->
-    <div class="flex gap-2 border-b border-white/10 pb-4">
-      <button
-        class="px-6 py-3 rounded-t-lg font-bold text-lg transition-all {topLevelTab === 'dataView' 
-          ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30' 
-          : 'bg-white/5 text-purple-300 hover:bg-white/10'}"
-        onclick={() => topLevelTab = 'dataView'}
-      >
-        <span class="mr-2">&#128202;</span>
-        Data View
-      </button>
-      <button
-        class="px-6 py-3 rounded-t-lg font-bold text-lg transition-all {topLevelTab === 'launchComparison' 
-          ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30' 
-          : 'bg-white/5 text-purple-300 hover:bg-white/10'}"
-        onclick={() => topLevelTab = 'launchComparison'}
-      >
-        <span class="mr-2">&#128640;</span>
-        Launch Comparison
-      </button>
-      <button
-        class="px-6 py-3 rounded-t-lg font-bold text-lg transition-all {topLevelTab === 'packageMetrics' 
-          ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30' 
-          : 'bg-white/5 text-purple-300 hover:bg-white/10'}"
-        onclick={() => topLevelTab = 'packageMetrics'}
-      >
-        <span class="mr-2">&#128202;</span>
-        Package Metrics
-      </button>
+    <div class="border-b border-white/10 pb-4">
+      <ToggleGroup
+        variant="tabs"
+        options={[
+          { value: 'dataView', label: 'Data View', icon: '&#128202;' },
+          { value: 'launchComparison', label: 'Launch Comparison', icon: '&#128640;' },
+          { value: 'packageMetrics', label: 'Package Metrics', icon: '&#128202;' },
+        ]}
+        value={topLevelTab}
+        onchange={(v) => (topLevelTab = v as 'dataView' | 'launchComparison' | 'packageMetrics')}
+      />
     </div>
 
     {#if topLevelTab === 'dataView'}
@@ -92,26 +76,15 @@
       <FilterBar />
 
       <!-- Data View Tab Navigation -->
-      <div class="flex gap-2">
-        <button
-          class="px-4 py-2 rounded-lg font-semibold transition-all {dataViewTab === 'charts' 
-            ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/30' 
-            : 'bg-white/10 text-purple-200 hover:bg-white/20'}"
-          onclick={() => dataViewTab = 'charts'}
-        >
-          <span class="mr-2">&#128200;</span>
-          Charts
-        </button>
-        <button
-          class="px-4 py-2 rounded-lg font-semibold transition-all {dataViewTab === 'table' 
-            ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/30' 
-            : 'bg-white/10 text-purple-200 hover:bg-white/20'}"
-          onclick={() => dataViewTab = 'table'}
-        >
-          <span class="mr-2">&#128203;</span>
-          Data Table
-        </button>
-      </div>
+      <ToggleGroup
+        variant="tabs-secondary"
+        options={[
+          { value: 'charts', label: 'Charts', icon: '&#128200;' },
+          { value: 'table', label: 'Data Table', icon: '&#128203;' },
+        ]}
+        value={dataViewTab}
+        onchange={(v) => (dataViewTab = v as 'charts' | 'table')}
+      />
 
       {#if dataViewTab === 'charts'}
         <!-- Charts Grid -->

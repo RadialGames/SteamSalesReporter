@@ -6,17 +6,17 @@
   import UnicornLoader from '$lib/components/UnicornLoader.svelte';
 
   interface Props {
-    onClose: () => void;
-    onKeysChanged?: () => void;
+    onclose: () => void;
+    onkeyschanged?: () => void;
   }
 
-  let { onClose, onKeysChanged }: Props = $props();
-  
+  let { onclose, onkeyschanged }: Props = $props();
+
   // State
   let apiKeys = $state<ApiKeyInfo[]>([]);
   let isLoading = $state(true);
   let error = $state<string | null>(null);
-  
+
   // Add new key form
   let showAddForm = $state(false);
   let newKeyValue = $state('');
@@ -24,21 +24,21 @@
   let isValidating = $state(false);
   let isValidated = $state(false);
   let validationError = $state<string | null>(null);
-  
+
   // Edit name state
   let editingKeyId = $state<string | null>(null);
   let editingName = $state('');
-  
+
   // Delete/Wipe confirmation
   let confirmAction = $state<{ type: 'delete' | 'wipe'; keyId: string } | null>(null);
   let isProcessing = $state(false);
-  
+
   // Wipe progress modal
   let showWipeProgress = $state(false);
   let wipeProgressMessage = $state('');
   let wipeProgressPercent = $state(0);
   let wipeKeyName = $state('');
-  
+
   // Help section
   let showHelpSection = $state(false);
 
@@ -81,48 +81,57 @@
       if (newKeyValue.length < 20) {
         throw new Error('Hmm, that key looks a bit short. Double-check and try again!');
       }
-      
+
       // Make a test API call to validate the key
       let response;
       try {
-        response = await fetch(`/api/steam/IPartnerFinancialsService/GetChangedDatesForPartner/v1?key=${encodeURIComponent(newKeyValue.trim())}&highwatermark=0`);
+        response = await fetch(
+          `/api/steam/IPartnerFinancialsService/GetChangedDatesForPartner/v1?key=${encodeURIComponent(newKeyValue.trim())}&highwatermark=0`
+        );
       } catch {
-        throw new Error('Our unicorn couldn\'t reach Steam. Check your internet connection and try again!');
+        throw new Error(
+          "Our unicorn couldn't reach Steam. Check your internet connection and try again!"
+        );
       }
-      
+
       // Get the response text first to check what we received
       const responseText = await response.text();
-      
+
       // Check if Steam returned HTML instead of JSON (usually means auth failed)
       if (responseText.trim().startsWith('<!DOCTYPE') || responseText.trim().startsWith('<html')) {
         throw new Error('Steam says "neigh" to this key. Make sure it has Financial API access!');
       }
-      
+
       if (!response.ok) {
         if (response.status === 403 || response.status === 401) {
           throw new Error('Steam says "neigh" to this key. Make sure it has Financial API access!');
         }
-        throw new Error('Steam\'s servers are being shy. Try again in a moment!');
+        throw new Error("Steam's servers are being shy. Try again in a moment!");
       }
-      
+
       // Try to parse as JSON
       let data;
       try {
         data = JSON.parse(responseText);
       } catch {
-        throw new Error('Steam sent us something unexpected. The key might not have the right permissions!');
+        throw new Error(
+          'Steam sent us something unexpected. The key might not have the right permissions!'
+        );
       }
-      
+
       // Check if response indicates an error
       if (data.response === undefined) {
-        throw new Error('This key doesn\'t have the magic touch. Verify it has Financial API Group access!');
+        throw new Error(
+          "This key doesn't have the magic touch. Verify it has Financial API Group access!"
+        );
       }
-      
+
       // Validation successful!
       isValidated = true;
     } catch (err) {
       console.error('Error validating API key:', err);
-      validationError = err instanceof Error ? err.message : 'Something went wrong. Our unicorn is confused!';
+      validationError =
+        err instanceof Error ? err.message : 'Something went wrong. Our unicorn is confused!';
       isValidated = false;
     } finally {
       isValidating = false;
@@ -158,7 +167,7 @@
       newKeyValue = '';
       newKeyName = '';
       isValidated = false;
-      onKeysChanged?.();
+      onkeyschanged?.();
     } catch (err) {
       console.error('Error adding API key:', err);
       validationError = err instanceof Error ? err.message : 'Failed to add API key';
@@ -174,7 +183,7 @@
 
   async function saveEditName() {
     if (!editingKeyId) return;
-    
+
     try {
       await services.updateApiKeyName(editingKeyId, editingName.trim());
       await loadApiKeys();
@@ -193,29 +202,29 @@
 
   async function handleWipeData(keyId: string) {
     // Find the key name for display
-    const keyInfo = apiKeys.find(k => k.id === keyId);
+    const keyInfo = apiKeys.find((k) => k.id === keyId);
     wipeKeyName = keyInfo?.displayName || `Key ...${keyInfo?.keyHash || ''}`;
-    
+
     // Close confirmation and show progress modal
     confirmAction = null;
     showWipeProgress = true;
     wipeProgressMessage = 'Preparing to wipe data...';
     wipeProgressPercent = 0;
     isProcessing = true;
-    
+
     try {
       await services.clearDataForKey(keyId, (message, progress) => {
         wipeProgressMessage = message;
         wipeProgressPercent = progress;
       });
-      
+
       // Brief pause to show completion
       wipeProgressMessage = 'Complete!';
       wipeProgressPercent = 100;
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
       showWipeProgress = false;
-      onKeysChanged?.();
+      onkeyschanged?.();
     } catch (err) {
       console.error('Error wiping data:', err);
       showWipeProgress = false;
@@ -227,16 +236,16 @@
 
   async function handleDeleteKey(keyId: string) {
     // Find the key name for display
-    const keyInfo = apiKeys.find(k => k.id === keyId);
+    const keyInfo = apiKeys.find((k) => k.id === keyId);
     wipeKeyName = keyInfo?.displayName || `Key ...${keyInfo?.keyHash || ''}`;
-    
+
     // Close confirmation and show progress modal
     confirmAction = null;
     showWipeProgress = true;
     wipeProgressMessage = 'Preparing to delete...';
     wipeProgressPercent = 0;
     isProcessing = true;
-    
+
     try {
       // First wipe the data with progress
       await services.clearDataForKey(keyId, (message, progress) => {
@@ -244,20 +253,20 @@
         // Scale progress to 0-90% (leave room for key deletion)
         wipeProgressPercent = Math.round(progress * 0.9);
       });
-      
+
       // Then delete the key
       wipeProgressMessage = 'Removing API key...';
       wipeProgressPercent = 95;
       await services.deleteApiKey(keyId);
       await loadApiKeys();
-      
+
       // Brief pause to show completion
       wipeProgressMessage = 'Complete!';
       wipeProgressPercent = 100;
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
       showWipeProgress = false;
-      onKeysChanged?.();
+      onkeyschanged?.();
     } catch (err) {
       console.error('Error deleting API key:', err);
       showWipeProgress = false;
@@ -285,29 +294,30 @@
     <div class="modal-inner p-6 flex flex-col h-full overflow-hidden">
       <!-- Header (draggable) -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="flex items-center justify-between mb-6 cursor-grab active:cursor-grabbing" onmousedown={startWindowDrag}>
+      <div
+        class="flex items-center justify-between mb-6 cursor-grab active:cursor-grabbing"
+        onmousedown={startWindowDrag}
+      >
         <div class="flex items-center gap-4">
           <div class="text-4xl">&#128273;</div>
           <div>
-            <h2 class="text-2xl font-bold font-['Fredoka'] rainbow-text">
-              API Key Management
-            </h2>
-            <p class="text-purple-200 text-sm mt-1">
-              Manage your Steam Financial API keys
-            </p>
+            <h2 class="text-2xl font-bold font-['Fredoka'] rainbow-text">API Key Management</h2>
+            <p class="text-purple-200 text-sm mt-1">Manage your Steam Financial API keys</p>
           </div>
         </div>
         <button
           type="button"
           class="text-purple-300 hover:text-white transition-colors text-2xl"
-          onclick={onClose}
+          onclick={onclose}
         >
           &#10005;
         </button>
       </div>
 
       {#if error}
-        <div class="mb-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-200 text-sm select-text cursor-text">
+        <div
+          class="mb-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-200 text-sm select-text cursor-text"
+        >
           <span class="break-all">{error}</span>
         </div>
       {/if}
@@ -323,7 +333,9 @@
           <div class="text-center py-8">
             <div class="text-6xl mb-4">&#129412;</div>
             <p class="text-purple-200 mb-2">No API keys configured yet!</p>
-            <p class="text-purple-400 text-sm">Add your first Steam Financial API key to get started.</p>
+            <p class="text-purple-400 text-sm">
+              Add your first Steam Financial API key to get started.
+            </p>
           </div>
         {:else}
           <div class="space-y-3">
@@ -380,13 +392,13 @@
                       Added {formatDate(key.createdAt)}
                     </div>
                   </div>
-                  
+
                   <!-- Actions -->
                   <div class="flex items-center gap-2">
                     <button
                       type="button"
                       class="px-3 py-1.5 bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/50 text-orange-300 rounded text-xs transition-colors"
-                      onclick={() => confirmAction = { type: 'wipe', keyId: key.id }}
+                      onclick={() => (confirmAction = { type: 'wipe', keyId: key.id })}
                       title="Wipe data from this key"
                     >
                       &#128465; Wipe Data
@@ -394,7 +406,7 @@
                     <button
                       type="button"
                       class="px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 border border-red-500/50 text-red-300 rounded text-xs transition-colors"
-                      onclick={() => confirmAction = { type: 'delete', keyId: key.id }}
+                      onclick={() => (confirmAction = { type: 'delete', keyId: key.id })}
                       title="Delete this key"
                     >
                       &#10006;
@@ -411,23 +423,26 @@
                           <strong>Wipe all data</strong> from this API key?
                         </p>
                         <p class="text-xs text-red-300 mb-4">
-                          This will delete all sales records associated with this key. The key itself will remain.
+                          This will delete all sales records associated with this key. The key
+                          itself will remain.
                         </p>
                       {:else}
                         <p class="text-sm text-red-200 mb-3">
                           <strong>Delete this API key?</strong>
                         </p>
                         <p class="text-xs text-red-300 mb-4">
-                          This will delete the key and all its associated sales data. This action cannot be undone.
+                          This will delete the key and all its associated sales data. This action
+                          cannot be undone.
                         </p>
                       {/if}
                       <div class="flex gap-2">
                         <button
                           type="button"
                           class="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold text-sm transition-colors disabled:opacity-50"
-                          onclick={() => confirmAction?.type === 'wipe' 
-                            ? handleWipeData(key.id) 
-                            : handleDeleteKey(key.id)}
+                          onclick={() =>
+                            confirmAction?.type === 'wipe'
+                              ? handleWipeData(key.id)
+                              : handleDeleteKey(key.id)}
                           disabled={isProcessing}
                         >
                           {#if isProcessing}
@@ -440,7 +455,7 @@
                         <button
                           type="button"
                           class="px-4 py-2 bg-white/10 hover:bg-white/20 text-purple-200 rounded-lg font-semibold text-sm transition-colors"
-                          onclick={() => confirmAction = null}
+                          onclick={() => (confirmAction = null)}
                           disabled={isProcessing}
                         >
                           Cancel
@@ -462,7 +477,7 @@
             <span>&#10133;</span>
             Add New API Key
           </h3>
-          
+
           <div class="space-y-4">
             <div>
               <label for="newKeyName" class="block text-sm font-medium text-purple-200 mb-1">
@@ -476,7 +491,7 @@
                 placeholder="e.g., My Game Studio"
               />
             </div>
-            
+
             <div>
               <label for="newKeyValue" class="block text-sm font-medium text-purple-200 mb-1">
                 API Key
@@ -492,13 +507,17 @@
             </div>
 
             {#if validationError}
-              <div class="p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-200 text-sm select-text cursor-text">
+              <div
+                class="p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-200 text-sm select-text cursor-text"
+              >
                 <span class="break-all">{validationError}</span>
               </div>
             {/if}
 
             {#if isValidated}
-              <div class="p-3 bg-green-500/20 border border-green-500/50 rounded-lg text-green-200 text-sm flex items-center gap-2">
+              <div
+                class="p-3 bg-green-500/20 border border-green-500/50 rounded-lg text-green-200 text-sm flex items-center gap-2"
+              >
                 <span>&#10004;</span>
                 Key validated successfully!
               </div>
@@ -528,7 +547,13 @@
               <button
                 type="button"
                 class="btn-primary"
-                onclick={() => { showAddForm = false; newKeyValue = ''; newKeyName = ''; isValidated = false; validationError = null; }}
+                onclick={() => {
+                  showAddForm = false;
+                  newKeyValue = '';
+                  newKeyName = '';
+                  isValidated = false;
+                  validationError = null;
+                }}
               >
                 Cancel
               </button>
@@ -540,7 +565,7 @@
         <button
           type="button"
           class="w-full py-3 border-2 border-dashed border-purple-500/50 hover:border-purple-400 rounded-lg text-purple-300 hover:text-purple-200 transition-colors flex items-center justify-center gap-2 mb-4"
-          onclick={() => showAddForm = true}
+          onclick={() => (showAddForm = true)}
         >
           <span class="text-xl">&#10133;</span>
           Add New API Key
@@ -552,17 +577,27 @@
         <button
           type="button"
           class="w-full flex items-center justify-between text-sm font-semibold text-purple-200 hover:text-purple-100 transition-colors"
-          onclick={() => showHelpSection = !showHelpSection}
+          onclick={() => (showHelpSection = !showHelpSection)}
         >
           <span>How to get your API key</span>
-          <span class="text-lg transition-transform duration-200" class:rotate-180={showHelpSection}>
+          <span
+            class="text-lg transition-transform duration-200"
+            class:rotate-180={showHelpSection}
+          >
             &#9660;
           </span>
         </button>
-        
+
         {#if showHelpSection}
           <ol class="text-xs text-purple-300 space-y-2 list-decimal list-inside mt-3">
-            <li>Log in to the <a href="https://partner.steamgames.com/pub/groups/" target="_blank" rel="noopener noreferrer" class="text-purple-400 hover:text-purple-300 underline">Steam Partner Portal</a></li>
+            <li>
+              Log in to the <a
+                href="https://partner.steamgames.com/pub/groups/"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-purple-400 hover:text-purple-300 underline">Steam Partner Portal</a
+              >
+            </li>
             <li>Navigate to Users & Permissions &gt; Manage Groups</li>
             <li>Create a new Financial API Group</li>
             <li>Click Manage Web API Key</li>
@@ -586,11 +621,11 @@
 >
   <div class="flex flex-col items-center py-4">
     <UnicornLoader message={wipeProgressMessage} size="small" />
-    
+
     <!-- Progress bar -->
     <div class="mt-6 w-full">
       <div class="h-2 bg-white/10 rounded-full overflow-hidden">
-        <div 
+        <div
           class="h-full bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 transition-all duration-300"
           style="width: {wipeProgressPercent}%"
         ></div>

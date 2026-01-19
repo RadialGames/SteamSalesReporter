@@ -1,29 +1,35 @@
 /**
  * Svelte Stores for Sales Data and Application State
- * 
+ *
  * This module provides reactive stores for the sales data and derived aggregations.
- * 
+ *
  * ## Aggregation Strategy
- * 
+ *
  * The derived stores (dailySummary, appSummary, etc.) use real-time computation
  * which is suitable for smaller datasets. For larger datasets (>50k records),
  * consider using:
- * 
+ *
  * - Web Workers via `computeProductGroups()` from '$lib/workers'
  * - Pre-computed aggregates from IndexedDB via `getAppAggregates()` from '$lib/db/dexie'
- * 
+ *
  * ## Debouncing
- * 
+ *
  * Filter changes are debounced (200ms) to prevent rapid recomputation during
  * slider/input interactions. The `filterStore` exposes:
  * - `set/update`: Debounced updates for UI responsiveness
  * - `setImmediate`: Bypass debounce for programmatic changes
- * 
+ *
  * @see src/lib/workers/index.ts for the full aggregation strategy documentation
  */
 
 import { writable, derived, get } from 'svelte/store';
-import type { SalesRecord, DailySummary, AppSummary, CountrySummary, Filters } from '$lib/services/types';
+import type {
+  SalesRecord,
+  DailySummary,
+  AppSummary,
+  CountrySummary,
+  Filters,
+} from '$lib/services/types';
 import { applyFilters, applyFiltersExcluding } from '$lib/utils/filters';
 
 // Debounce delay in milliseconds
@@ -36,8 +42,8 @@ function createSalesStore() {
   return {
     subscribe,
     setData: (data: SalesRecord[]) => set(data),
-    addData: (data: SalesRecord[]) => update(current => [...current, ...data]),
-    clear: () => set([])
+    addData: (data: SalesRecord[]) => update((current) => [...current, ...data]),
+    clear: () => set([]),
   };
 }
 
@@ -50,11 +56,13 @@ function createSettingsStore() {
 
   return {
     subscribe,
-    get apiKey() { return _apiKey; },
+    get apiKey() {
+      return _apiKey;
+    },
     setApiKey: (key: string | null) => {
       _apiKey = key;
       set({ apiKey: key });
-    }
+    },
   };
 }
 
@@ -75,7 +83,7 @@ function createDebouncedFilterStore() {
     set: (value: Filters) => {
       // Update immediate store right away (for UI responsiveness)
       immediateFilterStore.set(value);
-      
+
       // Debounce the expensive recomputation
       if (debounceTimer) {
         clearTimeout(debounceTimer);
@@ -88,10 +96,10 @@ function createDebouncedFilterStore() {
     update: (fn: (value: Filters) => Filters) => {
       const currentValue = get(immediateFilterStore);
       const newValue = fn(currentValue);
-      
+
       // Update immediate store right away
       immediateFilterStore.set(newValue);
-      
+
       // Debounce the expensive recomputation
       if (debounceTimer) {
         clearTimeout(debounceTimer);
@@ -109,7 +117,7 @@ function createDebouncedFilterStore() {
       }
       immediateFilterStore.set(value);
       debouncedFilterStoreInternal.set(value);
-    }
+    },
   };
 }
 
@@ -144,91 +152,79 @@ export const isLoading = writable(false);
 export const errorMessage = writable<string | null>(null);
 
 // Derived stores for aggregated data (use debounced filters to prevent rapid recomputation)
-export const dailySummary = derived(
-  [salesStore, debouncedFilters],
-  ([$sales, $filters]) => {
-    const filtered = applyFilters($sales, $filters);
+export const dailySummary = derived([salesStore, debouncedFilters], ([$sales, $filters]) => {
+  const filtered = applyFilters($sales, $filters);
 
-    const byDate = new Map<string, DailySummary>();
-    
-    for (const sale of filtered) {
-      const existing = byDate.get(sale.date) || {
-        date: sale.date,
-        totalRevenue: 0,
-        totalUnits: 0
-      };
-      
-      existing.totalRevenue += sale.netSalesUsd ?? 0;
-      existing.totalUnits += sale.unitsSold;
-      byDate.set(sale.date, existing);
-    }
-    
-    return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+  const byDate = new Map<string, DailySummary>();
+
+  for (const sale of filtered) {
+    const existing = byDate.get(sale.date) || {
+      date: sale.date,
+      totalRevenue: 0,
+      totalUnits: 0,
+    };
+
+    existing.totalRevenue += sale.netSalesUsd ?? 0;
+    existing.totalUnits += sale.unitsSold;
+    byDate.set(sale.date, existing);
   }
-);
 
-export const appSummary = derived(
-  [salesStore, debouncedFilters],
-  ([$sales, $filters]) => {
-    // For app summary, don't filter by appId or appIds
-    const filtered = applyFiltersExcluding($sales, $filters, 'appId', 'appIds');
+  return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+});
 
-    const byApp = new Map<number, AppSummary>();
-    
-    for (const sale of filtered) {
-      const existing = byApp.get(sale.appId) || {
-        appId: sale.appId,
-        appName: sale.appName || `App ${sale.appId}`,
-        totalRevenue: 0,
-        totalUnits: 0
-      };
-      
-      existing.totalRevenue += sale.netSalesUsd ?? 0;
-      existing.totalUnits += sale.unitsSold;
-      if (sale.appName) existing.appName = sale.appName;
-      byApp.set(sale.appId, existing);
-    }
-    
-    return Array.from(byApp.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
+export const appSummary = derived([salesStore, debouncedFilters], ([$sales, $filters]) => {
+  // For app summary, don't filter by appIds
+  const filtered = applyFiltersExcluding($sales, $filters, 'appIds');
+
+  const byApp = new Map<number, AppSummary>();
+
+  for (const sale of filtered) {
+    const existing = byApp.get(sale.appId) || {
+      appId: sale.appId,
+      appName: sale.appName || `App ${sale.appId}`,
+      totalRevenue: 0,
+      totalUnits: 0,
+    };
+
+    existing.totalRevenue += sale.netSalesUsd ?? 0;
+    existing.totalUnits += sale.unitsSold;
+    if (sale.appName) existing.appName = sale.appName;
+    byApp.set(sale.appId, existing);
   }
-);
 
-export const countrySummary = derived(
-  [salesStore, debouncedFilters],
-  ([$sales, $filters]) => {
-    // For country summary, don't filter by countryCode
-    const filtered = applyFiltersExcluding($sales, $filters, 'countryCode');
+  return Array.from(byApp.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
+});
 
-    const byCountry = new Map<string, CountrySummary>();
-    
-    for (const sale of filtered) {
-      const existing = byCountry.get(sale.countryCode) || {
-        countryCode: sale.countryCode,
-        totalRevenue: 0,
-        totalUnits: 0
-      };
-      
-      existing.totalRevenue += sale.netSalesUsd ?? 0;
-      existing.totalUnits += sale.unitsSold;
-      byCountry.set(sale.countryCode, existing);
-    }
-    
-    return Array.from(byCountry.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
+export const countrySummary = derived([salesStore, debouncedFilters], ([$sales, $filters]) => {
+  // For country summary, don't filter by countryCode
+  const filtered = applyFiltersExcluding($sales, $filters, 'countryCode');
+
+  const byCountry = new Map<string, CountrySummary>();
+
+  for (const sale of filtered) {
+    const existing = byCountry.get(sale.countryCode) || {
+      countryCode: sale.countryCode,
+      totalRevenue: 0,
+      totalUnits: 0,
+    };
+
+    existing.totalRevenue += sale.netSalesUsd ?? 0;
+    existing.totalUnits += sale.unitsSold;
+    byCountry.set(sale.countryCode, existing);
   }
-);
+
+  return Array.from(byCountry.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
+});
 
 // Total stats derived store
-export const totalStats = derived(
-  [salesStore, debouncedFilters],
-  ([$sales, $filters]) => {
-    const filtered = applyFilters($sales, $filters);
+export const totalStats = derived([salesStore, debouncedFilters], ([$sales, $filters]) => {
+  const filtered = applyFilters($sales, $filters);
 
-    return {
-      totalRevenue: filtered.reduce((sum, s) => sum + (s.netSalesUsd ?? 0), 0),
-      totalUnits: filtered.reduce((sum, s) => sum + s.unitsSold, 0),
-      totalRecords: filtered.length,
-      uniqueApps: new Set(filtered.map(s => s.appId)).size,
-      uniqueCountries: new Set(filtered.map(s => s.countryCode)).size
-    };
-  }
-);
+  return {
+    totalRevenue: filtered.reduce((sum, s) => sum + (s.netSalesUsd ?? 0), 0),
+    totalUnits: filtered.reduce((sum, s) => sum + s.unitsSold, 0),
+    totalRecords: filtered.length,
+    uniqueApps: new Set(filtered.map((s) => s.appId)).size,
+    uniqueCountries: new Set(filtered.map((s) => s.countryCode)).size,
+  };
+});

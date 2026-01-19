@@ -50,31 +50,28 @@ const MS_PER_DAY = 1000 * 60 * 60 * 24;
 
 /**
  * Calculate day-by-day metrics from launch date
- * 
+ *
  * Launch date is determined as the earliest date with positive netSalesUsd.
  * Records are aggregated by day offset from the launch date.
- * 
+ *
  * @param records - Sales records to analyze
  * @param maxDays - Maximum number of days from launch to include
  * @returns Launch date and day-by-day aggregated data
- * 
+ *
  * @example
  * const { launchDate, days } = calculateLaunchDays(records, 30);
  * // days[0] = Day 0 (launch day)
  * // days[1] = Day 1, etc.
  */
-export function calculateLaunchDays(
-  records: SalesRecord[], 
-  maxDays: number
-): LaunchMetricsResult {
+export function calculateLaunchDays(records: SalesRecord[], maxDays: number): LaunchMetricsResult {
   // OPTIMIZATION: Convert reactive proxy array to plain array to avoid proxy overhead
   const plainRecords = Array.isArray(records) ? [...records] : records;
-  
+
   // Find launch day: earliest date with netSalesUsd > 0
   // Use a single pass to find the minimum date instead of filter+map+sort
   let launchDate: string | null = null;
   let launchTime = Infinity;
-  
+
   for (let i = 0; i < plainRecords.length; i++) {
     const record = plainRecords[i];
     if (record.netSalesUsd && record.netSalesUsd > 0) {
@@ -85,7 +82,7 @@ export function calculateLaunchDays(
       }
     }
   }
-  
+
   if (launchDate === null) {
     return { launchDate: null, days: [] };
   }
@@ -97,7 +94,7 @@ export function calculateLaunchDays(
     const record = plainRecords[i];
     const recordTime = getDateTimestamp(record.date);
     const dayOffset = Math.floor((recordTime - launchTime) / MS_PER_DAY);
-    
+
     // Only include days within maxDays range
     if (dayOffset < 0 || dayOffset >= maxDays) continue;
 
@@ -106,7 +103,7 @@ export function calculateLaunchDays(
       // Calculate the actual date for this day offset
       const dayDate = new Date(launchTime + dayOffset * MS_PER_DAY);
       const dateStr = dayDate.toISOString().split('T')[0];
-      
+
       dayData = {
         day: dayOffset,
         date: dateStr,
@@ -114,7 +111,7 @@ export function calculateLaunchDays(
         returned: 0,
         activated: 0,
         bundle: 0,
-        netRevenue: 0
+        netRevenue: 0,
       };
       dayMap.set(dayOffset, dayData);
     }
@@ -123,7 +120,7 @@ export function calculateLaunchDays(
     dayData.returned += record.grossUnitsReturned ?? 0;
     dayData.activated += record.grossUnitsActivated ?? 0;
     dayData.netRevenue += record.netSalesUsd ?? 0;
-    
+
     // Count units from bundle sales (where bundleid exists)
     if (record.bundleid != null) {
       dayData.bundle += (record.grossUnitsSold ?? 0) + (record.grossUnitsActivated ?? 0);
@@ -157,7 +154,7 @@ export function calculateDayTotals(days: DayData[]): DayTotals {
       returned: acc.returned + d.returned,
       activated: acc.activated + d.activated,
       bundle: acc.bundle + d.bundle,
-      netRevenue: acc.netRevenue + d.netRevenue
+      netRevenue: acc.netRevenue + d.netRevenue,
     }),
     { sold: 0, returned: 0, activated: 0, bundle: 0, netRevenue: 0 }
   );

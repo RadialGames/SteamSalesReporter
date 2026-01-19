@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 /* Custom theme variables */
 :root {
@@ -12,7 +12,7 @@
   --purple-700: #7c3aed;
   --purple-800: #6b21a8;
   --purple-900: #581c87;
-  
+
   --rainbow-red: #ff6b6b;
   --rainbow-orange: #feca57;
   --rainbow-yellow: #fff56a;
@@ -28,7 +28,9 @@
   box-sizing: border-box;
 }
 
-html, body, #app {
+html,
+body,
+#app {
   height: 100%;
   margin: 0;
   padding: 0;
@@ -36,7 +38,12 @@ html, body, #app {
 
 body {
   font-family: 'Nunito', sans-serif;
-  background: linear-gradient(135deg, var(--purple-900) 0%, var(--purple-800) 50%, var(--purple-700) 100%);
+  background: linear-gradient(
+    135deg,
+    var(--purple-900) 0%,
+    var(--purple-800) 50%,
+    var(--purple-700) 100%
+  );
   min-height: 100vh;
   color: white;
   /* Desktop app: disable text selection globally */
@@ -48,16 +55,21 @@ body {
 
 /* Allow text selection on data fields */
 .selectable,
-input, textarea,
+input,
+textarea,
 table td,
-pre, code {
+pre,
+code {
   -webkit-user-select: text;
   user-select: text;
   cursor: text;
 }
 
 /* Proper cursor for interactive elements */
-button, a, [role="button"], select {
+button,
+a,
+[role='button'],
+select {
   cursor: pointer;
 }
 
@@ -120,9 +132,15 @@ img {
 }
 
 @keyframes rainbow-rotate {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
 }
 
 /* Modal inner - solid background to cover rainbow */
@@ -141,8 +159,15 @@ img {
 
 /* Sparkle animation */
 @keyframes sparkle {
-  0%, 100% { opacity: 0; transform: scale(0); }
-  50% { opacity: 1; transform: scale(1); }
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .sparkle {
@@ -151,8 +176,13 @@ img {
 
 /* Unicorn bounce animation */
 @keyframes unicorn-bounce {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-10px); }
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
 }
 
 .unicorn-bounce {
@@ -161,9 +191,15 @@ img {
 
 /* Rainbow shimmer animation */
 @keyframes rainbow-shimmer {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
 }
 
 .rainbow-shimmer {
@@ -332,6 +368,13 @@ img {
 }
 
 @keyframes twinkle {
-  0%, 100% { opacity: 0.3; transform: scale(1); }
-  50% { opacity: 0.8; transform: scale(1.2); }
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.2);
+  }
 }

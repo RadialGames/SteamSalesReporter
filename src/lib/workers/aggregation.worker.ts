@@ -50,14 +50,12 @@ function computeGroups(
 
     if (!groups.has(id)) {
       const name =
-        mode === 'appId'
-          ? record.appName || `App ${id}`
-          : record.packageName || `Package ${id}`;
+        mode === 'appId' ? record.appName || `App ${id}` : record.packageName || `Package ${id}`;
       groups.set(id, {
         id,
         name,
         records: [],
-        hasRevenue: false
+        hasRevenue: false,
       });
     }
 
@@ -73,7 +71,7 @@ function computeGroups(
       self.postMessage({
         type: 'progress',
         data: { processed: i, total },
-        id: messageId
+        id: messageId,
       });
     }
   }
@@ -82,7 +80,7 @@ function computeGroups(
   self.postMessage({
     type: 'progress',
     data: { processed: total, total },
-    id: messageId
+    id: messageId,
   });
 
   return Array.from(groups.values())
@@ -100,7 +98,7 @@ function computeAggregates(records: SalesRecord[], filters: Filters) {
     const existing = byDate.get(sale.date) || {
       date: sale.date,
       totalRevenue: 0,
-      totalUnits: 0
+      totalUnits: 0,
     };
     existing.totalRevenue += sale.netSalesUsd ?? 0;
     existing.totalUnits += sale.unitsSold;
@@ -108,15 +106,18 @@ function computeAggregates(records: SalesRecord[], filters: Filters) {
   }
   const dailySummary = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
 
-  // App summary (without appId/appIds filter)
-  const filteredForApps = applyFiltersExcluding(records, filters, 'appId', 'appIds');
-  const byApp = new Map<number, { appId: number; appName: string; totalRevenue: number; totalUnits: number }>();
+  // App summary (without appIds filter)
+  const filteredForApps = applyFiltersExcluding(records, filters, 'appIds');
+  const byApp = new Map<
+    number,
+    { appId: number; appName: string; totalRevenue: number; totalUnits: number }
+  >();
   for (const sale of filteredForApps) {
     const existing = byApp.get(sale.appId) || {
       appId: sale.appId,
       appName: sale.appName || `App ${sale.appId}`,
       totalRevenue: 0,
-      totalUnits: 0
+      totalUnits: 0,
     };
     existing.totalRevenue += sale.netSalesUsd ?? 0;
     existing.totalUnits += sale.unitsSold;
@@ -127,18 +128,23 @@ function computeAggregates(records: SalesRecord[], filters: Filters) {
 
   // Country summary (without countryCode filter)
   const filteredForCountries = applyFiltersExcluding(records, filters, 'countryCode');
-  const byCountry = new Map<string, { countryCode: string; totalRevenue: number; totalUnits: number }>();
+  const byCountry = new Map<
+    string,
+    { countryCode: string; totalRevenue: number; totalUnits: number }
+  >();
   for (const sale of filteredForCountries) {
     const existing = byCountry.get(sale.countryCode) || {
       countryCode: sale.countryCode,
       totalRevenue: 0,
-      totalUnits: 0
+      totalUnits: 0,
     };
     existing.totalRevenue += sale.netSalesUsd ?? 0;
     existing.totalUnits += sale.unitsSold;
     byCountry.set(sale.countryCode, existing);
   }
-  const countrySummary = Array.from(byCountry.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
+  const countrySummary = Array.from(byCountry.values()).sort(
+    (a, b) => b.totalRevenue - a.totalRevenue
+  );
 
   // Total stats
   const totalStats = {
@@ -146,14 +152,14 @@ function computeAggregates(records: SalesRecord[], filters: Filters) {
     totalUnits: filtered.reduce((sum, s) => sum + s.unitsSold, 0),
     totalRecords: filtered.length,
     uniqueApps: new Set(filtered.map((s) => s.appId)).size,
-    uniqueCountries: new Set(filtered.map((s) => s.countryCode)).size
+    uniqueCountries: new Set(filtered.map((s) => s.countryCode)).size,
   };
 
   return {
     dailySummary,
     appSummary,
     countrySummary,
-    totalStats
+    totalStats,
   };
 }
 
@@ -180,7 +186,7 @@ self.onmessage = (event: MessageEvent<WorkerMessage & { id?: string }>) => {
     self.postMessage({
       type: 'error',
       error: error instanceof Error ? error.message : 'Unknown error',
-      id
+      id,
     });
   }
 };

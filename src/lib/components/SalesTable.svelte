@@ -3,6 +3,7 @@
   import type { SalesRecord } from '$lib/services/types';
   import { formatCurrency, formatNumber } from '$lib/utils/formatters';
   import { getCountryName } from '$lib/utils/countries';
+  import { applyFilters } from '$lib/utils/filters';
   import Modal from './ui/Modal.svelte';
 
   type SortField = 'date' | 'appName' | 'countryCode' | 'grossUnitsSold' | 'netSalesUsd';
@@ -12,34 +13,14 @@
   let sortDirection = $state<SortDirection>('desc');
   let currentPage = $state(1);
   const pageSize = 25;
-  
+
   // Raw record modal state
   let selectedRecord = $state<SalesRecord | null>(null);
 
   // Apply filters and sorting
   const filteredData = $derived.by(() => {
-    let data = [...$salesStore];
-    const filters = $filterStore;
-
-    // Apply filters
-    if (filters.startDate) {
-      data = data.filter(r => r.date >= filters.startDate!);
-    }
-    if (filters.endDate) {
-      data = data.filter(r => r.date <= filters.endDate!);
-    }
-    if (filters.appIds && filters.appIds.length > 0) {
-      data = data.filter(r => filters.appIds!.includes(r.appId));
-    }
-    if (filters.packageIds && filters.packageIds.length > 0) {
-      data = data.filter(r => r.packageid != null && filters.packageIds!.includes(r.packageid));
-    }
-    if (filters.countryCode) {
-      data = data.filter(r => r.countryCode === filters.countryCode);
-    }
-    if (filters.apiKeyIds && filters.apiKeyIds.length > 0) {
-      data = data.filter(r => filters.apiKeyIds!.includes(r.apiKeyId));
-    }
+    // Use shared filter utility instead of duplicating filter logic
+    const data = applyFilters([...$salesStore], $filterStore);
 
     // Apply sorting
     data.sort((a, b) => {
@@ -72,13 +53,11 @@
       }
 
       if (typeof aVal === 'string' && typeof bVal === 'string') {
-        return sortDirection === 'asc' 
-          ? aVal.localeCompare(bVal) 
-          : bVal.localeCompare(aVal);
+        return sortDirection === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
       }
-      
-      return sortDirection === 'asc' 
-        ? (aVal as number) - (bVal as number) 
+
+      return sortDirection === 'asc'
+        ? (aVal as number) - (bVal as number)
         : (bVal as number) - (aVal as number);
     });
 
@@ -145,7 +124,7 @@
           <tr>
             <th class="w-8"></th>
             <th>
-              <button 
+              <button
                 class="flex items-center gap-1 hover:text-purple-300 transition-colors"
                 onclick={() => toggleSort('date')}
               >
@@ -154,7 +133,7 @@
               </button>
             </th>
             <th>
-              <button 
+              <button
                 class="flex items-center gap-1 hover:text-purple-300 transition-colors"
                 onclick={() => toggleSort('appName')}
               >
@@ -163,7 +142,7 @@
               </button>
             </th>
             <th>
-              <button 
+              <button
                 class="flex items-center gap-1 hover:text-purple-300 transition-colors"
                 onclick={() => toggleSort('countryCode')}
               >
@@ -172,7 +151,7 @@
               </button>
             </th>
             <th>
-              <button 
+              <button
                 class="flex items-center gap-1 hover:text-purple-300 transition-colors"
                 onclick={() => toggleSort('grossUnitsSold')}
               >
@@ -183,7 +162,7 @@
             <th>Returns</th>
             <th>Activations</th>
             <th>
-              <button 
+              <button
                 class="flex items-center gap-1 hover:text-purple-300 transition-colors"
                 onclick={() => toggleSort('netSalesUsd')}
               >
@@ -194,7 +173,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each paginatedData as record}
+          {#each paginatedData as record (record.id)}
             <tr>
               <td class="text-center">
                 <button
@@ -214,7 +193,7 @@
                 </div>
               </td>
               <td>
-                <span 
+                <span
                   class="inline-flex items-center gap-1 px-2 py-1 bg-purple-500/20 rounded text-sm cursor-help"
                   title={getCountryName(record.countryCode)}
                 >
@@ -242,12 +221,12 @@
         <div class="flex gap-2">
           <button
             class="px-3 py-1 rounded bg-purple-500/20 hover:bg-purple-500/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            onclick={() => currentPage = Math.max(1, currentPage - 1)}
+            onclick={() => (currentPage = Math.max(1, currentPage - 1))}
             disabled={currentPage === 1}
           >
             &#9664; Prev
           </button>
-          
+
           {#each Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
             // Show pages around current page
             let page: number;
@@ -261,12 +240,12 @@
               page = currentPage - 2 + i;
             }
             return page;
-          }) as page}
+          }) as page (page)}
             <button
-              class="w-8 h-8 rounded transition-colors {page === currentPage 
-                ? 'bg-purple-500 text-white' 
+              class="w-8 h-8 rounded transition-colors {page === currentPage
+                ? 'bg-purple-500 text-white'
                 : 'bg-purple-500/20 hover:bg-purple-500/40'}"
-              onclick={() => currentPage = page}
+              onclick={() => (currentPage = page)}
             >
               {page}
             </button>
@@ -274,7 +253,7 @@
 
           <button
             class="px-3 py-1 rounded bg-purple-500/20 hover:bg-purple-500/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            onclick={() => currentPage = Math.min(totalPages, currentPage + 1)}
+            onclick={() => (currentPage = Math.min(totalPages, currentPage + 1))}
             disabled={currentPage === totalPages}
           >
             Next &#9654;
@@ -289,26 +268,24 @@
 <Modal
   open={selectedRecord !== null}
   title="Raw Record Data"
-  subtitle={selectedRecord ? `${selectedRecord.date} | ${selectedRecord.appName || `App ${selectedRecord.appId}`} | ${selectedRecord.countryCode}` : ''}
+  subtitle={selectedRecord
+    ? `${selectedRecord.date} | ${selectedRecord.appName || `App ${selectedRecord.appId}`} | ${selectedRecord.countryCode}`
+    : ''}
   icon="&#128203;"
   maxWidth="3xl"
   onclose={closeRawModal}
 >
   {#if selectedRecord}
     <div class="bg-purple-900/50 rounded-lg p-4">
-      <pre class="text-sm text-purple-100 font-mono whitespace-pre-wrap break-words">{formatJson(selectedRecord)}</pre>
+      <pre class="text-sm text-purple-100 font-mono whitespace-pre-wrap break-words">{formatJson(
+          selectedRecord
+        )}</pre>
     </div>
   {/if}
-  
+
   {#snippet footer()}
     <div class="flex justify-end">
-      <button
-        type="button"
-        class="btn-primary"
-        onclick={closeRawModal}
-      >
-        Close
-      </button>
+      <button type="button" class="btn-primary" onclick={closeRawModal}> Close </button>
     </div>
   {/snippet}
 </Modal>

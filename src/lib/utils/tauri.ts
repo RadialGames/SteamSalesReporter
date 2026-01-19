@@ -10,20 +10,20 @@ export function isTauri(): boolean {
 
 /**
  * Start dragging the window from a mouse event.
- * 
+ *
  * This enables frameless window dragging in Tauri apps.
  * Does nothing when not running in Tauri.
- * 
+ *
  * Usage: Add `onmousedown={startWindowDrag}` to draggable elements.
- * 
+ *
  * @param event - The mouse event that triggered the drag
  * @param excludeSelectors - CSS selectors for elements that should NOT trigger drag
  *                           (defaults to interactive elements like buttons, inputs, etc.)
- * 
+ *
  * @example
  * // Basic usage on a header
  * <div onmousedown={startWindowDrag}>Drag me</div>
- * 
+ *
  * @example
  * // Custom exclusions
  * <div onmousedown={(e) => startWindowDrag(e, ['button', 'a', '.no-drag'])}>
@@ -32,16 +32,24 @@ export function isTauri(): boolean {
  */
 export async function startWindowDrag(
   event: MouseEvent,
-  excludeSelectors: string[] = ['button', 'a', 'input', 'select', 'textarea', '.glass-card', '[data-no-drag]']
+  excludeSelectors: string[] = [
+    'button',
+    'a',
+    'input',
+    'select',
+    'textarea',
+    '.glass-card',
+    '[data-no-drag]',
+  ]
 ): Promise<void> {
   // Check if clicking on an element that should not trigger drag
   const target = event.target as HTMLElement;
   const excludeSelector = excludeSelectors.join(', ');
-  
+
   if (target.closest(excludeSelector)) {
     return;
   }
-  
+
   if (isTauri()) {
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
@@ -56,16 +64,24 @@ export async function startWindowDrag(
 /**
  * Create a window drag handler with custom exclusions.
  * Useful for creating reusable handlers in components.
- * 
+ *
  * @param excludeSelectors - CSS selectors for elements that should NOT trigger drag
  * @returns A mouse event handler for window dragging
- * 
+ *
  * @example
  * const handleDrag = createWindowDragHandler(['button', '.interactive']);
  * <div onmousedown={handleDrag}>Drag me</div>
  */
 export function createWindowDragHandler(
-  excludeSelectors: string[] = ['button', 'a', 'input', 'select', 'textarea', '.glass-card', '[data-no-drag]']
+  excludeSelectors: string[] = [
+    'button',
+    'a',
+    'input',
+    'select',
+    'textarea',
+    '.glass-card',
+    '[data-no-drag]',
+  ]
 ): (event: MouseEvent) => Promise<void> {
   return (event: MouseEvent) => startWindowDrag(event, excludeSelectors);
 }

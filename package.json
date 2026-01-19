@@ -9,27 +9,38 @@
     "build": "vite build",
     "build:tauri": "tauri build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "npm run typecheck && eslint src --ext .ts,.svelte && prettier --check \"src/**/*.{ts,svelte,css,html}\"",
+    "lint:fix": "eslint src --ext .ts,.svelte --fix && prettier --write \"src/**/*.{ts,svelte,css,html}\"",
+    "format": "prettier --write \"src/**/*.{ts,svelte,css,html}\"",
+    "check": "npm run lint",
     "update-check": "npx npm-check -u",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.2.0",
-    "@types/uuid": "^11.0.0",
     "chart.js": "^4",
     "dexie": "^4",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9",
     "@sveltejs/vite-plugin-svelte": "^6",
     "@tailwindcss/vite": "^4",
     "@tauri-apps/cli": "^2.2.3",
     "@tsconfig/svelte": "^5",
     "@types/node": "^25",
-    "svelte": "^5",
+    "@types/uuid": "^11.0.0",
+    "eslint": "^9",
+    "eslint-plugin-svelte": "^3",
+    "globals": "^17.0.0",
+    "prettier": "^3",
+    "prettier-plugin-svelte": "^3",
+    "svelte": "^5.47.1",
     "svelte-check": "^4",
     "tailwindcss": "^4",
     "typescript": "^5",
+    "typescript-eslint": "^8",
     "vite": "^7"
   }
 }

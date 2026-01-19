@@ -18,18 +18,18 @@
     footer?: Snippet;
   }
 
-  let { 
-    open, 
-    title, 
+  let {
+    open,
+    title,
     subtitle,
     icon,
     maxWidth = 'lg',
     draggable = false,
     closeOnBackdrop = true,
-    onclose, 
+    onclose,
     header,
-    children, 
-    footer 
+    children,
+    footer,
   }: Props = $props();
 
   const maxWidthClasses = {
@@ -38,7 +38,7 @@
     lg: 'max-w-lg',
     xl: 'max-w-xl',
     '2xl': 'max-w-2xl',
-    '3xl': 'max-w-3xl'
+    '3xl': 'max-w-3xl',
   };
 
   function handleBackdropClick(e: MouseEvent) {
@@ -70,15 +70,21 @@
     onclick={handleBackdropClick}
     onmousedown={handleBackdropMouseDown}
   >
-    <div class="rainbow-border {maxWidthClasses[maxWidth]} w-full max-h-[90vh] overflow-hidden flex flex-col">
+    <div
+      class="rainbow-border {maxWidthClasses[
+        maxWidth
+      ]} w-full max-h-[90vh] overflow-hidden flex flex-col"
+    >
       <div class="modal-inner p-6 flex flex-col h-full overflow-hidden">
         <!-- Header -->
         {#if header}
           {@render header()}
         {:else if title}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div 
-            class="flex items-center justify-between mb-4 {draggable ? 'cursor-grab active:cursor-grabbing' : ''}"
+          <div
+            class="flex items-center justify-between mb-4 {draggable
+              ? 'cursor-grab active:cursor-grabbing'
+              : ''}"
             onmousedown={draggable ? startWindowDrag : undefined}
           >
             <div class="flex items-center gap-3">

@@ -6,7 +6,9 @@
 <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
   <!-- Total Revenue -->
   <div class="glass-card p-4 relative overflow-hidden group hover:scale-105 transition-transform">
-    <div class="absolute -top-4 -right-4 text-6xl opacity-10 group-hover:opacity-20 transition-opacity">
+    <div
+      class="absolute -top-4 -right-4 text-6xl opacity-10 group-hover:opacity-20 transition-opacity"
+    >
       &#128176;
     </div>
     <div class="relative">
@@ -19,7 +21,9 @@
 
   <!-- Units Sold -->
   <div class="glass-card p-4 relative overflow-hidden group hover:scale-105 transition-transform">
-    <div class="absolute -top-4 -right-4 text-6xl opacity-10 group-hover:opacity-20 transition-opacity">
+    <div
+      class="absolute -top-4 -right-4 text-6xl opacity-10 group-hover:opacity-20 transition-opacity"
+    >
       &#128230;
     </div>
     <div class="relative">
@@ -32,7 +36,9 @@
 
   <!-- Unique Products -->
   <div class="glass-card p-4 relative overflow-hidden group hover:scale-105 transition-transform">
-    <div class="absolute -top-4 -right-4 text-6xl opacity-10 group-hover:opacity-20 transition-opacity">
+    <div
+      class="absolute -top-4 -right-4 text-6xl opacity-10 group-hover:opacity-20 transition-opacity"
+    >
       &#127918;
     </div>
     <div class="relative">
@@ -45,7 +51,9 @@
 
   <!-- Countries -->
   <div class="glass-card p-4 relative overflow-hidden group hover:scale-105 transition-transform">
-    <div class="absolute -top-4 -right-4 text-6xl opacity-10 group-hover:opacity-20 transition-opacity">
+    <div
+      class="absolute -top-4 -right-4 text-6xl opacity-10 group-hover:opacity-20 transition-opacity"
+    >
       &#127758;
     </div>
     <div class="relative">
@@ -58,7 +66,9 @@
 
   <!-- Records -->
   <div class="glass-card p-4 relative overflow-hidden group hover:scale-105 transition-transform">
-    <div class="absolute -top-4 -right-4 text-6xl opacity-10 group-hover:opacity-20 transition-opacity">
+    <div
+      class="absolute -top-4 -right-4 text-6xl opacity-10 group-hover:opacity-20 transition-opacity"
+    >
       &#128202;
     </div>
     <div class="relative">

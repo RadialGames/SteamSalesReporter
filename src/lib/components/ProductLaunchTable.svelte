@@ -1,8 +1,17 @@
 <script lang="ts">
   import type { SalesRecord } from '$lib/services/types';
   import { formatCurrency, formatNumber } from '$lib/utils/formatters';
-  import { calculateLaunchDays, calculateDayTotals, type LaunchMetricsResult } from '$lib/utils/launch-metrics';
-  import { generateCsv, copyToClipboard as clipboardCopy, downloadFile, sanitizeFilename } from '$lib/utils/csv-export';
+  import {
+    calculateLaunchDays,
+    calculateDayTotals,
+    type LaunchMetricsResult,
+  } from '$lib/utils/launch-metrics';
+  import {
+    generateCsv,
+    copyToClipboard as clipboardCopy,
+    downloadFile,
+    sanitizeFilename,
+  } from '$lib/utils/csv-export';
 
   interface Props {
     id: number;
@@ -20,13 +29,13 @@
   const tableData = $derived.by(() => {
     if (launchMetrics) {
       // Use pre-computed metrics, just slice to maxDays
-      const slicedDays = launchMetrics.days.filter(d => d.day < maxDays);
+      const slicedDays = launchMetrics.days.filter((d) => d.day < maxDays);
       return {
         launchDate: launchMetrics.launchDate,
-        days: slicedDays
+        days: slicedDays,
       };
     }
-    
+
     // Fallback: compute from records (slow due to proxy overhead)
     return calculateLaunchDays(records, maxDays);
   });
@@ -37,15 +46,23 @@
     const data = tableData;
     if (!data.launchDate || data.days.length === 0) return '';
 
-    const headers = ['Day', 'Date', 'Units Sold', 'Returns', 'Activations', 'Bundle', 'Net Revenue (USD)'];
-    const rows = data.days.map(d => [
+    const headers = [
+      'Day',
+      'Date',
+      'Units Sold',
+      'Returns',
+      'Activations',
+      'Bundle',
+      'Net Revenue (USD)',
+    ];
+    const rows = data.days.map((d) => [
       d.day.toString(),
       d.date,
       d.sold.toString(),
       d.returned.toString(),
       d.activated.toString(),
       d.bundle.toString(),
-      d.netRevenue.toFixed(2)
+      d.netRevenue.toFixed(2),
     ]);
 
     return generateCsv(headers, rows);
@@ -58,7 +75,7 @@
     const success = await clipboardCopy(csvContent);
     if (success) {
       copyFeedback = true;
-      setTimeout(() => copyFeedback = false, 2000);
+      setTimeout(() => (copyFeedback = false), 2000);
     }
   }
 
@@ -75,7 +92,9 @@
 
 <div class="glass-card overflow-hidden">
   <!-- Header -->
-  <div class="p-4 border-b border-white/10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+  <div
+    class="p-4 border-b border-white/10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+  >
     <div>
       <h3 class="text-lg font-bold font-['Fredoka'] flex items-center gap-2">
         <span class="text-xl">&#127918;</span>
@@ -89,8 +108,10 @@
         {/if}
       </p>
     </div>
-    
-    <div class="flex self-start sm:self-auto p-[2px] rounded-lg bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500">
+
+    <div
+      class="flex self-start sm:self-auto p-[2px] rounded-lg bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500"
+    >
       <div class="flex bg-purple-900/90 rounded-md">
         <button
           class="px-3 py-1.5 rounded-l-md text-purple-200 text-sm
@@ -153,13 +174,17 @@
               <td class="font-mono text-red-400">{formatNumber(day.returned)}</td>
               <td class="font-mono text-blue-400">{formatNumber(day.activated)}</td>
               <td class="font-mono text-orange-400">{formatNumber(day.bundle)}</td>
-              <td class="font-mono font-semibold text-green-400">{formatCurrency(day.netRevenue)}</td>
+              <td class="font-mono font-semibold text-green-400"
+                >{formatCurrency(day.netRevenue)}</td
+              >
             </tr>
           {/each}
         </tbody>
         <tfoot>
           <tr class="border-t-2 border-white/20 bg-white/5">
-            <td colspan="2" class="font-bold text-purple-200">Total ({tableData.days.length} days)</td>
+            <td colspan="2" class="font-bold text-purple-200"
+              >Total ({tableData.days.length} days)</td
+            >
             <td class="font-mono font-bold text-green-400">{totals.sold.toLocaleString()}</td>
             <td class="font-mono font-bold text-red-400">{totals.returned.toLocaleString()}</td>
             <td class="font-mono font-bold text-blue-400">{totals.activated.toLocaleString()}</td>

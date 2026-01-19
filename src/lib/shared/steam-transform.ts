@@ -43,25 +43,25 @@ export function buildLookupMaps(response: SteamDetailedSalesResponse['response']
 
   const countryInfoMap = new Map<string, { name: string; region: string }>();
   for (const country of response.country_info || []) {
-    countryInfoMap.set(country.country_code, { 
-      name: country.country_name, 
-      region: country.region 
+    countryInfoMap.set(country.country_code, {
+      name: country.country_name,
+      region: country.region,
     });
   }
 
   const gameItemInfoMap = new Map<string, { description: string; category: string }>();
   for (const item of response.game_item_info || []) {
-    gameItemInfoMap.set(`${item.appid}-${item.game_item_id}`, { 
-      description: item.game_item_description, 
-      category: item.game_item_category 
+    gameItemInfoMap.set(`${item.appid}-${item.game_item_id}`, {
+      description: item.game_item_description,
+      category: item.game_item_category,
     });
   }
 
   const keyRequestInfoMap = new Map<number, { notes: string; gameCodeDescription: string }>();
   for (const kr of response.key_request_info || []) {
-    keyRequestInfoMap.set(kr.key_request_id, { 
-      notes: kr.key_request_notes, 
-      gameCodeDescription: kr.game_code_description 
+    keyRequestInfoMap.set(kr.key_request_id, {
+      notes: kr.key_request_notes,
+      gameCodeDescription: kr.game_code_description,
     });
   }
 
@@ -78,7 +78,7 @@ export function buildLookupMaps(response: SteamDetailedSalesResponse['response']
     countryInfoMap,
     gameItemInfoMap,
     keyRequestInfoMap,
-    discountInfoMap
+    discountInfoMap,
   };
 }
 
@@ -86,8 +86,8 @@ export function buildLookupMaps(response: SteamDetailedSalesResponse['response']
  * Transform a single Steam API sale item to our SalesRecord format
  */
 export function transformSaleItem(
-  item: SteamSaleItem, 
-  apiKeyId: string, 
+  item: SteamSaleItem,
+  apiKeyId: string,
   maps: LookupMaps
 ): SalesRecord {
   const primaryAppid = item.primary_appid || item.appid || 0;
@@ -101,7 +101,9 @@ export function transformSaleItem(
   const countryInfo = maps.countryInfoMap.get(item.country_code);
   const gameItemKey = item.appid && item.game_item_id ? `${item.appid}-${item.game_item_id}` : null;
   const gameItemInfo = gameItemKey ? maps.gameItemInfoMap.get(gameItemKey) : null;
-  const keyRequestInfo = item.key_request_id ? maps.keyRequestInfoMap.get(item.key_request_id) : null;
+  const keyRequestInfo = item.key_request_id
+    ? maps.keyRequestInfoMap.get(item.key_request_id)
+    : null;
 
   // Generate unique key hash from Steam API's unique identifying fields
   const record: SalesRecord = {
@@ -159,17 +161,19 @@ export function transformSaleItem(
     gameItemCategory: gameItemInfo?.category,
     keyRequestNotes: keyRequestInfo?.notes,
     gameCodeDescription: keyRequestInfo?.gameCodeDescription,
-    combinedDiscountName: item.combined_discount_id ? maps.discountInfoMap.get(item.combined_discount_id) : undefined,
+    combinedDiscountName: item.combined_discount_id
+      ? maps.discountInfoMap.get(item.combined_discount_id)
+      : undefined,
 
     // Legacy fields for backwards compatibility with charts
     appId: primaryAppid,
-    unitsSold
+    unitsSold,
   };
-  
+
   // Generate and set the unique key as the id (primary key)
   // This ensures records with the same identifying fields will overwrite each other
   record.id = generateUniqueKey(record);
-  
+
   return record;
 }
 
@@ -177,14 +181,14 @@ export function transformSaleItem(
  * Transform an entire Steam API response to SalesRecord array
  */
 export function transformSteamResponse(
-  response: SteamDetailedSalesResponse, 
+  response: SteamDetailedSalesResponse,
   apiKeyId: string
 ): SalesRecord[] {
   const results = response.response?.results || [];
   if (results.length === 0) return [];
 
   const maps = buildLookupMaps(response.response);
-  return results.map(item => transformSaleItem(item, apiKeyId, maps));
+  return results.map((item) => transformSaleItem(item, apiKeyId, maps));
 }
 
 /**
@@ -198,23 +202,23 @@ export function parseMaxId(maxId: string | undefined): number {
  * Generate a unique key from Steam API's unique identifying fields.
  * This creates a deterministic string key that uniquely identifies each sales record
  * according to Steam's documentation. Used as the primary key in the database.
- * 
+ *
  * Unique identifying fields per Steam API documentation:
  * - partnerid, date, line_item_type (always present)
  * - packageid, bundleid, package_sale_type, key_request_id, base_price, sale_price (for Packages)
  * - appid, game_item_id (for MicroTxn)
  * - platform, country_code, currency (always present)
  * - combined_discount_id (optional)
- * 
+ *
  * We also include apiKeyId to separate records from different API keys.
- * 
+ *
  * Format: Uses a delimiter-separated format that's deterministic and readable.
  */
 export function generateUniqueKey(record: SalesRecord): string {
   // Build a deterministic string from all unique identifying fields
   // Order matters for consistency - always use the same order
   const parts: string[] = [];
-  
+
   // Always present fields (in consistent order)
   parts.push(record.partnerid?.toString() ?? '');
   parts.push(record.date);
@@ -223,7 +227,7 @@ export function generateUniqueKey(record: SalesRecord): string {
   parts.push(record.countryCode);
   parts.push(record.currency ?? '');
   parts.push(record.apiKeyId);
-  
+
   // Package-specific fields (use empty string if not present to maintain position)
   parts.push(record.packageid?.toString() ?? '');
   parts.push(record.bundleid?.toString() ?? '');
@@ -231,14 +235,14 @@ export function generateUniqueKey(record: SalesRecord): string {
   parts.push(record.keyRequestId?.toString() ?? '');
   parts.push(record.basePrice ?? '');
   parts.push(record.salePrice ?? '');
-  
+
   // MicroTxn-specific fields
   parts.push(record.appid?.toString() ?? '');
   parts.push(record.gameItemId?.toString() ?? '');
-  
+
   // Optional fields
   parts.push(record.combinedDiscountId?.toString() ?? '');
-  
+
   // Join with a delimiter that won't appear in the data
   // Using a pipe with special markers to ensure uniqueness
   return parts.join('|');

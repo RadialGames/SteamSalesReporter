@@ -8,19 +8,11 @@
     BarElement,
     Title,
     Tooltip,
-    Legend
+    Legend,
   } from 'chart.js';
   import { appSummary } from '$lib/stores/sales';
 
-  Chart.register(
-    BarController,
-    CategoryScale,
-    LinearScale,
-    BarElement,
-    Title,
-    Tooltip,
-    Legend
-  );
+  Chart.register(BarController, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
   let canvas: HTMLCanvasElement = $state.raw(null!);
   let chart: Chart | null = null;
@@ -39,27 +31,29 @@
   function createChart() {
     if (!canvas) return;
     const ctx = canvas;
-    
+
     if (chart) {
       chart.destroy();
     }
 
     const data = $appSummary.slice(0, 10);
-    
+
     chart = new Chart(ctx, {
       type: 'bar',
       data: {
-        labels: data.map(a => a.appName),
+        labels: data.map((a) => a.appName),
         datasets: [
           {
             label: 'Net Revenue (USD)',
-            data: data.map(a => a.totalRevenue),
+            data: data.map((a) => a.totalRevenue),
             backgroundColor: data.map((_, i) => rainbowColors[i % rainbowColors.length]),
-            borderColor: data.map((_, i) => rainbowColors[i % rainbowColors.length].replace('0.8', '1')),
+            borderColor: data.map((_, i) =>
+              rainbowColors[i % rainbowColors.length].replace('0.8', '1')
+            ),
             borderWidth: 2,
-            borderRadius: 8
-          }
-        ]
+            borderRadius: 8,
+          },
+        ],
       },
       options: {
         responsive: true,
@@ -67,7 +61,7 @@
         indexAxis: 'y',
         plugins: {
           legend: {
-            display: false
+            display: false,
           },
           tooltip: {
             backgroundColor: 'rgba(88, 28, 135, 0.9)',
@@ -77,24 +71,24 @@
             borderWidth: 1,
             padding: 12,
             callbacks: {
-              label: function(context) {
+              label: function (context) {
                 const value = context.parsed.x ?? 0;
                 return `Revenue: $${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-              }
-            }
-          }
+              },
+            },
+          },
         },
         scales: {
           x: {
             grid: {
-              color: 'rgba(255, 255, 255, 0.1)'
+              color: 'rgba(255, 255, 255, 0.1)',
             },
             ticks: {
               color: 'rgba(255, 255, 255, 0.7)',
               font: {
-                family: 'Nunito'
+                family: 'Nunito',
               },
-              callback: function(tickValue) {
+              callback: function (tickValue) {
                 const value = typeof tickValue === 'string' ? parseFloat(tickValue) : tickValue;
                 if (value >= 1000000) {
                   return '$' + (value / 1000000).toFixed(1) + 'M';
@@ -102,23 +96,23 @@
                   return '$' + (value / 1000).toFixed(1) + 'K';
                 }
                 return '$' + value;
-              }
-            }
+              },
+            },
           },
           y: {
             grid: {
-              display: false
+              display: false,
             },
             ticks: {
               color: 'rgba(255, 255, 255, 0.9)',
               font: {
                 family: 'Nunito',
-                weight: 600
-              }
-            }
-          }
-        }
-      }
+                weight: 600,
+              },
+            },
+          },
+        },
+      },
     });
   }
 
@@ -145,7 +139,7 @@
     <span class="text-2xl">&#127918;</span>
     Revenue by Product
   </h3>
-  
+
   {#if $appSummary.length === 0}
     <div class="flex flex-col items-center justify-center h-64 text-purple-300">
       <span class="text-4xl mb-2">&#128230;</span>

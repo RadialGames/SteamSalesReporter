@@ -33,7 +33,7 @@
 
   const dateRange = $derived.by(() => {
     if ($salesStore.length === 0) return { min: '', max: '' };
-    const dates = $salesStore.map(s => s.date).sort();
+    const dates = $salesStore.map((s) => s.date).sort();
     return { min: dates[0], max: dates[dates.length - 1] };
   });
 
@@ -45,13 +45,13 @@
 
   function applyFilters() {
     const filters: Filters = {};
-    
+
     if (startDate) filters.startDate = startDate;
     if (endDate) filters.endDate = endDate;
     if (selectedAppId !== '') filters.appIds = [selectedAppId as number];
     if (selectedCountry) filters.countryCode = selectedCountry;
     if (selectedApiKey) filters.apiKeyIds = [selectedApiKey];
-    
+
     filterStore.set(filters);
   }
 
@@ -96,12 +96,9 @@
     {#if uniqueApps.length > 1}
       <div class="flex items-center gap-2">
         <span class="text-purple-300 text-sm font-medium">&#127918; Product:</span>
-        <select
-          bind:value={selectedAppId}
-          class="input-magic text-sm py-1 px-2 min-w-[150px]"
-        >
+        <select bind:value={selectedAppId} class="input-magic text-sm py-1 px-2 min-w-[150px]">
           <option value="">All Products</option>
-          {#each uniqueApps as app}
+          {#each uniqueApps as app (app.id)}
             <option value={app.id}>{app.name}</option>
           {/each}
         </select>
@@ -111,12 +108,9 @@
     {#if uniqueCountries.length > 1}
       <div class="flex items-center gap-2">
         <span class="text-purple-300 text-sm font-medium">&#127758; Country:</span>
-        <select
-          bind:value={selectedCountry}
-          class="input-magic text-sm py-1 px-2 min-w-[120px]"
-        >
+        <select bind:value={selectedCountry} class="input-magic text-sm py-1 px-2 min-w-[120px]">
           <option value="">All Countries</option>
-          {#each uniqueCountries as country}
+          {#each uniqueCountries as country (country)}
             <option value={country}>{country}</option>
           {/each}
         </select>
@@ -126,22 +120,16 @@
     {#if uniqueApiKeys.length > 1}
       <div class="flex items-center gap-2">
         <span class="text-purple-300 text-sm font-medium">&#128273; API Key:</span>
-        <select
-          bind:value={selectedApiKey}
-          class="input-magic text-sm py-1 px-2 min-w-[100px]"
-        >
+        <select bind:value={selectedApiKey} class="input-magic text-sm py-1 px-2 min-w-[100px]">
           <option value="">All Keys</option>
-          {#each uniqueApiKeys as apiKey}
+          {#each uniqueApiKeys as apiKey (apiKey)}
             <option value={apiKey}>{apiKey}</option>
           {/each}
         </select>
       </div>
     {/if}
 
-    <button
-      class="btn-primary text-sm py-1 px-3 flex items-center gap-1"
-      onclick={clearFilters}
-    >
+    <button class="btn-primary text-sm py-1 px-3 flex items-center gap-1" onclick={clearFilters}>
       <span>&#10006;</span>
       Clear Filters
     </button>
