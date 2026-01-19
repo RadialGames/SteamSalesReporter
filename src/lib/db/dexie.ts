@@ -39,10 +39,11 @@ import type { SalesRecord, SyncMeta, Filters } from '$lib/services/types';
  *
  * Version history (for reference only - no migrations exist):
  * - v1: Initial schema with string-based unique keys
+ * - v2: Added syncTasks table for task queue persistence
  *
  * DO NOT ADD MIGRATION LOGIC. Just increment and let the database wipe.
  */
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 /**
  * Database name includes version to force fresh start on schema changes.
@@ -83,6 +84,19 @@ export interface AggregatesMeta {
   value: string;
 }
 
+/**
+ * Sync task for tracking date processing in the task queue.
+ * Used for crash recovery and progress tracking.
+ */
+export interface SyncTask {
+  id: string; // Composite key: `${apiKeyId}|${date}`
+  apiKeyId: string;
+  date: string;
+  status: 'todo' | 'in_progress' | 'done';
+  createdAt: number;
+  completedAt?: number;
+}
+
 // ============================================================================
 // Database Class - SINGLE SCHEMA VERSION ONLY
 // ============================================================================
@@ -100,6 +114,7 @@ class SteamSalesDB extends Dexie {
   appAggregates!: EntityTable<AppAggregate, 'appId'>;
   countryAggregates!: EntityTable<CountryAggregate, 'countryCode'>;
   aggregatesMeta!: EntityTable<AggregatesMeta, 'key'>;
+  syncTasks!: EntityTable<SyncTask, 'id'>;
 
   constructor() {
     super(DATABASE_NAME);
@@ -125,6 +140,9 @@ class SteamSalesDB extends Dexie {
       appAggregates: 'appId',
       countryAggregates: 'countryCode',
       aggregatesMeta: 'key',
+      // Sync task queue for tracking date processing
+      // Composite index [apiKeyId+status] for efficient pending task queries
+      syncTasks: 'id, apiKeyId, date, status, [apiKeyId+status]',
     });
   }
 }

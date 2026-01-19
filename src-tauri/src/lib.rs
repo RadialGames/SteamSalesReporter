@@ -66,6 +66,18 @@ pub fn run() {
             commands::clear_all_data,
             commands::clear_data_for_key,
             commands::get_existing_dates,
+            // Sync task queue commands
+            commands::create_sync_tasks,
+            commands::get_pending_tasks,
+            commands::get_pending_tasks_for_key,
+            commands::mark_task_in_progress,
+            commands::mark_task_done,
+            commands::count_pending_tasks,
+            commands::count_all_pending_tasks,
+            commands::reset_in_progress_tasks,
+            commands::clear_completed_tasks,
+            commands::delete_sync_tasks_for_key,
+            commands::clear_sales_for_date,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

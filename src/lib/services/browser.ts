@@ -9,6 +9,8 @@ import type {
   ChangedDatesResult,
   DataProgressCallback,
 } from './types';
+import type { SyncTask, SyncTaskService } from './sync-tasks';
+import { createTaskId } from './sync-tasks';
 import { db, computeAndStoreAggregates, clearAggregates } from '$lib/db/dexie';
 
 // Re-export modules for direct access if needed
@@ -250,5 +252,121 @@ export const browserServices: SalesService = {
       dates.add(record.date);
     }
     return dates;
+  },
+};
+
+// ============================================================================
+// Sync Task Service (Browser/Dexie implementation)
+// ============================================================================
+
+export const browserSyncTaskService: SyncTaskService = {
+  async createSyncTasks(apiKeyId: string, dates: string[]): Promise<void> {
+    const now = Date.now();
+    const tasks: SyncTask[] = [];
+
+    for (const date of dates) {
+      const taskId = createTaskId(apiKeyId, date);
+
+      // Delete existing sales data for this date and api key
+      // Filter by apiKeyId first (indexed), then filter by date
+      const recordsToDelete = await db.sales
+        .where('apiKeyId')
+        .equals(apiKeyId)
+        .filter((r) => r.date === date)
+        .primaryKeys();
+      if (recordsToDelete.length > 0) {
+        await db.sales.bulkDelete(recordsToDelete as string[]);
+      }
+
+      tasks.push({
+        id: taskId,
+        apiKeyId,
+        date,
+        status: 'todo',
+        createdAt: now,
+      });
+    }
+
+    // Bulk put will overwrite existing tasks with same ID
+    if (tasks.length > 0) {
+      await db.syncTasks.bulkPut(tasks);
+    }
+  },
+
+  async getPendingTasks(): Promise<SyncTask[]> {
+    const tasks = await db.syncTasks.where('status').anyOf(['todo', 'in_progress']).sortBy('date');
+    return tasks;
+  },
+
+  async getPendingTasksForKey(apiKeyId: string): Promise<SyncTask[]> {
+    const tasks = await db.syncTasks
+      .where('[apiKeyId+status]')
+      .anyOf([
+        [apiKeyId, 'todo'],
+        [apiKeyId, 'in_progress'],
+      ])
+      .sortBy('date');
+    return tasks;
+  },
+
+  async markTaskInProgress(taskId: string): Promise<void> {
+    await db.syncTasks.update(taskId, { status: 'in_progress' });
+  },
+
+  async markTaskDone(taskId: string): Promise<void> {
+    await db.syncTasks.update(taskId, {
+      status: 'done',
+      completedAt: Date.now(),
+    });
+  },
+
+  async countPendingTasks(): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    const tasks = await db.syncTasks.where('status').anyOf(['todo', 'in_progress']).toArray();
+
+    for (const task of tasks) {
+      const current = counts.get(task.apiKeyId) || 0;
+      counts.set(task.apiKeyId, current + 1);
+    }
+
+    return counts;
+  },
+
+  async countAllPendingTasks(): Promise<number> {
+    return db.syncTasks.where('status').anyOf(['todo', 'in_progress']).count();
+  },
+
+  async resetInProgressTasks(): Promise<number> {
+    const inProgressTasks = await db.syncTasks.where('status').equals('in_progress').toArray();
+
+    if (inProgressTasks.length > 0) {
+      await db.syncTasks.bulkUpdate(
+        inProgressTasks.map((task) => ({
+          key: task.id,
+          changes: { status: 'todo' as const },
+        }))
+      );
+    }
+
+    return inProgressTasks.length;
+  },
+
+  async clearCompletedTasks(): Promise<void> {
+    await db.syncTasks.where('status').equals('done').delete();
+  },
+
+  async deleteSyncTasksForKey(apiKeyId: string): Promise<void> {
+    await db.syncTasks.where('apiKeyId').equals(apiKeyId).delete();
+  },
+
+  async clearSalesForDate(apiKeyId: string, date: string): Promise<void> {
+    const recordsToDelete = await db.sales
+      .where('apiKeyId')
+      .equals(apiKeyId)
+      .filter((r) => r.date === date)
+      .primaryKeys();
+    if (recordsToDelete.length > 0) {
+      await db.sales.bulkDelete(recordsToDelete as string[]);
+    }
   },
 };

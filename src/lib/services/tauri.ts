@@ -12,6 +12,7 @@ import type {
   ChangedDatesResult,
   DataProgressCallback,
 } from './types';
+import type { SyncTask, SyncTaskService } from './sync-tasks';
 
 export const tauriServices: SalesService = {
   // Multi-key API management
@@ -77,5 +78,56 @@ export const tauriServices: SalesService = {
   async getExistingDates(apiKeyId: string): Promise<Set<string>> {
     const dates: string[] = await invoke('get_existing_dates', { apiKeyId });
     return new Set(dates);
+  },
+};
+
+// ============================================================================
+// Sync Task Service (Tauri/Rust implementation)
+// ============================================================================
+
+export const tauriSyncTaskService: SyncTaskService = {
+  async createSyncTasks(apiKeyId: string, dates: string[]): Promise<void> {
+    return invoke('create_sync_tasks', { apiKeyId, dates });
+  },
+
+  async getPendingTasks(): Promise<SyncTask[]> {
+    return invoke('get_pending_tasks');
+  },
+
+  async getPendingTasksForKey(apiKeyId: string): Promise<SyncTask[]> {
+    return invoke('get_pending_tasks_for_key', { apiKeyId });
+  },
+
+  async markTaskInProgress(taskId: string): Promise<void> {
+    return invoke('mark_task_in_progress', { taskId });
+  },
+
+  async markTaskDone(taskId: string): Promise<void> {
+    return invoke('mark_task_done', { taskId });
+  },
+
+  async countPendingTasks(): Promise<Map<string, number>> {
+    const counts: [string, number][] = await invoke('count_pending_tasks');
+    return new Map(counts);
+  },
+
+  async countAllPendingTasks(): Promise<number> {
+    return invoke('count_all_pending_tasks');
+  },
+
+  async resetInProgressTasks(): Promise<number> {
+    return invoke('reset_in_progress_tasks');
+  },
+
+  async clearCompletedTasks(): Promise<void> {
+    return invoke('clear_completed_tasks');
+  },
+
+  async deleteSyncTasksForKey(apiKeyId: string): Promise<void> {
+    return invoke('delete_sync_tasks_for_key', { apiKeyId });
+  },
+
+  async clearSalesForDate(apiKeyId: string, date: string): Promise<void> {
+    return invoke('clear_sales_for_date', { apiKeyId, date });
   },
 };

@@ -4,7 +4,8 @@
   import ApiKeyModal from '$lib/components/ApiKeyModal.svelte';
   import RefreshProgressModal from '$lib/components/RefreshProgressModal.svelte';
   import UnicornLoader from '$lib/components/UnicornLoader.svelte';
-  import { services } from '$lib/services';
+  import { services, syncTaskService } from '$lib/services';
+  import type { SyncProgress } from '$lib/services/types';
   import {
     initializeDatabase,
     aggregatesNeedUpdate,
@@ -13,29 +14,25 @@
   import { salesStore, settingsStore, isLoading, errorMessage } from '$lib/stores/sales';
   import type { ApiKeyInfo } from '$lib/services/types';
   import {
-    type SyncSessionState,
-    type SyncProgress,
-    createSyncSessionState,
     runSync,
+    resumeSync,
+    hasPendingTasks,
     isCancellationError,
   } from '$lib/services/sync-orchestrator';
 
   let showApiKeyModal = $state(false);
   let showProgressModal = $state(false);
   let refreshProgress = $state<SyncProgress>({
-    phase: 'init',
+    phase: 'discovery',
     message: 'Preparing...',
-    current: 0,
-    total: 0,
-    recordsFetched: 0,
   });
   let abortController: AbortController | null = $state(null);
   let isInitialized = $state(false);
   let stars: { x: number; y: number; delay: number }[] = $state([]);
   let apiKeys = $state<ApiKeyInfo[]>([]);
 
-  // Session state - persists across pause/resume but cleared on modal close
-  let syncSessionState: SyncSessionState | null = $state(null);
+  // Track if we're in a paused state with pending work
+  let hasPendingWork = $state(false);
 
   let loadingMessage = $state('Initializing...');
   let loadingProgress = $state(0);
@@ -67,6 +64,20 @@
       console.log(
         `Database wiped due to old data format. ${cleanedRecords} records cleared. Please refresh your data.`
       );
+    }
+
+    // Reset any in_progress tasks from crashed/interrupted syncs
+    loadingMessage = 'Checking for interrupted syncs...';
+    loadingProgress = 51;
+    const resetCount = await syncTaskService.resetInProgressTasks();
+    if (resetCount > 0) {
+      console.log(`Reset ${resetCount} interrupted sync tasks`);
+    }
+
+    // Check if there are pending tasks from a previous incomplete sync
+    hasPendingWork = await hasPendingTasks();
+    if (hasPendingWork) {
+      console.log('Found pending sync tasks from previous session');
     }
 
     // Check if aggregates need to be recomputed (safety net for pause/cancel/crash scenarios)
@@ -146,10 +157,8 @@
       return;
     }
 
-    // Check if we're resuming from a paused state WITH existing session state
-    // Scenario A: Resume - syncSessionState exists and phase is 'cancelled'
-    // Scenario B: Fresh Start - syncSessionState is null (modal was closed)
-    const isResuming = refreshProgress.phase === 'cancelled' && syncSessionState !== null;
+    // Check if we're resuming from a paused state with pending work
+    const isResuming = refreshProgress.phase === 'cancelled' && hasPendingWork;
 
     // Create new abort controller for this sync
     abortController = new AbortController();
@@ -160,48 +169,42 @@
     errorMessage.set(null);
 
     try {
-      // Initialize session state for fresh starts
-      if (!isResuming) {
-        syncSessionState = createSyncSessionState();
-      }
+      // Use resumeSync if we have pending work, otherwise runSync for fresh start
+      const syncFn = isResuming ? resumeSync : runSync;
 
-      // Run sync using the orchestrator
-      const { totalRecords } = await runSync(
-        apiKeys,
-        syncSessionState!,
-        {
-          onProgress: (progress) => {
-            refreshProgress = progress;
-          },
-          getAbortSignal: () => abortController?.signal,
+      const { totalRecords, totalTasks } = await syncFn(apiKeys, {
+        onProgress: (progress) => {
+          refreshProgress = progress;
         },
-        isResuming
-      );
+        getAbortSignal: () => abortController?.signal,
+      });
 
       // Always reload all data from database after sync
       const allData = await services.getSalesFromDb({});
       salesStore.setData(allData);
 
-      // Show complete status and clear session state
+      // Clear pending work flag on successful completion
+      hasPendingWork = false;
+
+      // Show complete status
       refreshProgress = {
         phase: 'complete',
         message:
           totalRecords > 0
             ? `Synced ${totalRecords.toLocaleString()} records!`
             : 'Already up to date!',
-        current: syncSessionState?.totalDates ?? 0,
-        total: syncSessionState?.totalDates ?? 0,
+        totalTasks,
+        completedTasks: totalTasks,
         recordsFetched: totalRecords,
       };
-      syncSessionState = null; // Clear session state on complete
     } catch (err) {
       if (isCancellationError(err)) {
         // Reload any data that was saved before cancellation
         const allData = await services.getSalesFromDb({});
         salesStore.setData(allData);
 
-        // Keep syncSessionState intact for potential resume!
-        // It will be cleared when modal is closed (Scenario B)
+        // Check if there's still pending work
+        hasPendingWork = await hasPendingTasks();
 
         refreshProgress = {
           phase: 'cancelled',
@@ -209,10 +212,10 @@
             allData.length > 0
               ? `Sync paused. ${allData.length.toLocaleString()} records loaded so far.`
               : 'Sync was paused.',
-          current: refreshProgress.current,
-          total: refreshProgress.total,
-          recordsFetched: syncSessionState?.totalRecordsFetched ?? 0,
-          keySegments: syncSessionState?.keySegments,
+          completedTasks: refreshProgress.completedTasks,
+          totalTasks: refreshProgress.totalTasks,
+          recordsFetched: refreshProgress.recordsFetched,
+          keySegments: refreshProgress.keySegments,
         };
       } else {
         console.error('Error refreshing data:', err);
@@ -221,12 +224,12 @@
         refreshProgress = {
           phase: 'error',
           message: 'Sync failed',
-          current: refreshProgress.current,
-          total: refreshProgress.total,
+          completedTasks: refreshProgress.completedTasks,
+          totalTasks: refreshProgress.totalTasks,
           recordsFetched: refreshProgress.recordsFetched,
           error: errorMsg,
         };
-        syncSessionState = null; // Clear session state on error
+        hasPendingWork = false; // Clear on error
       }
     } finally {
       isLoading.set(false);
@@ -242,9 +245,8 @@
 
   function closeProgressModal() {
     showProgressModal = false;
-    // Clear session state so next Refresh Data starts fresh
-    // This is the key difference between Close (Scenario B) and Resume (Scenario A)
-    syncSessionState = null;
+    // Note: We keep hasPendingWork flag - tasks are persisted in DB
+    // Next "Refresh Data" will discover them and offer to resume
   }
 
   function openSettings() {

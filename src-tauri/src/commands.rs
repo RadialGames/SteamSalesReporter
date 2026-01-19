@@ -1,5 +1,5 @@
 use crate::steam_api::SteamApi;
-use crate::types::{ApiKeyInfo, FetchResult, Filters, SalesRecord};
+use crate::types::{ApiKeyInfo, FetchResult, Filters, SalesRecord, SyncTask};
 use crate::AppState;
 use tauri::State;
 use uuid::Uuid;
@@ -206,4 +206,93 @@ pub fn get_existing_dates(
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let dates = db.get_existing_dates(&api_key_id).map_err(|e| e.to_string())?;
     Ok(dates.into_iter().collect())
+}
+
+// ============================================================================
+// Sync Task Queue commands
+// ============================================================================
+
+#[tauri::command]
+pub fn create_sync_tasks(
+    state: State<'_, AppState>,
+    api_key_id: String,
+    dates: Vec<String>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.create_sync_tasks(&api_key_id, &dates)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_pending_tasks(state: State<'_, AppState>) -> Result<Vec<SyncTask>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_pending_tasks().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_pending_tasks_for_key(
+    state: State<'_, AppState>,
+    api_key_id: String,
+) -> Result<Vec<SyncTask>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_pending_tasks_for_key(&api_key_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn mark_task_in_progress(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.mark_task_in_progress(&task_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn mark_task_done(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.mark_task_done(&task_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn count_pending_tasks(state: State<'_, AppState>) -> Result<Vec<(String, i64)>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.count_pending_tasks().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn count_all_pending_tasks(state: State<'_, AppState>) -> Result<i64, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.count_all_pending_tasks().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn reset_in_progress_tasks(state: State<'_, AppState>) -> Result<i64, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.reset_in_progress_tasks().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_completed_tasks(state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.clear_completed_tasks().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_sync_tasks_for_key(
+    state: State<'_, AppState>,
+    api_key_id: String,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.delete_sync_tasks_for_key(&api_key_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_sales_for_date(
+    state: State<'_, AppState>,
+    api_key_id: String,
+    date: String,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.clear_sales_for_date(&api_key_id, &date)
+        .map_err(|e| e.to_string())
 }

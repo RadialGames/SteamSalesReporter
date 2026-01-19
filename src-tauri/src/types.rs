@@ -11,6 +11,19 @@ pub struct ApiKeyInfo {
     pub created_at: i64,
 }
 
+/// Sync task for tracking date processing in the task queue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTask {
+    pub id: String, // Composite key: `${apiKeyId}|${date}`
+    pub api_key_id: String,
+    pub date: String,
+    pub status: String, // 'todo', 'in_progress', 'done'
+    pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+}
+
 /// Sales record from Steam API
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

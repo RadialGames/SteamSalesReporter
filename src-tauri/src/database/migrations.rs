@@ -27,6 +27,10 @@ pub fn init_schema(db: &mut Database) -> Result<(), DatabaseError> {
         migrate_to_v3(db)?;
     }
 
+    if current_version < 4 {
+        migrate_to_v4(db)?;
+    }
+
     Ok(())
 }
 
@@ -220,6 +224,36 @@ fn get_schema_version(db: &Database) -> i32 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0)
+}
+
+fn migrate_to_v4(db: &Database) -> Result<(), DatabaseError> {
+    // Version 4: Add sync_tasks table for task queue persistence
+    db.conn.execute(
+        "CREATE TABLE IF NOT EXISTS sync_tasks (
+            id TEXT PRIMARY KEY,
+            api_key_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'todo',
+            created_at INTEGER NOT NULL,
+            completed_at INTEGER
+        )",
+        [],
+    )?;
+
+    // Index for efficient pending task queries
+    db.conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sync_tasks_api_key_status ON sync_tasks(api_key_id, status)",
+        [],
+    )?;
+
+    // Index for querying by status alone
+    db.conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sync_tasks_status ON sync_tasks(status)",
+        [],
+    )?;
+
+    set_schema_version(db, 4);
+    Ok(())
 }
 
 fn set_schema_version(db: &Database, version: i32) {

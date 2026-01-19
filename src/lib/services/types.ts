@@ -77,6 +77,57 @@ export interface SyncMeta {
   value: string;
 }
 
+/**
+ * Sync phase for the 3-phase sync flow:
+ * - discovery: Finding changed dates across all API keys
+ * - populate: Fetching sales data for each pending task
+ * - aggregates: Computing pre-computed aggregates
+ * - complete: Sync finished successfully
+ * - error: Sync failed
+ * - cancelled: Sync was cancelled by user
+ */
+export type SyncPhase =
+  | 'discovery'
+  | 'populate'
+  | 'aggregates'
+  | 'complete'
+  | 'error'
+  | 'cancelled';
+
+/**
+ * Key segment for tracking per-API-key progress
+ */
+export interface KeySegment {
+  keyId: string;
+  keyName: string;
+  pendingTasks: number;
+}
+
+/**
+ * Progress information for the sync process
+ */
+export interface SyncProgress {
+  phase: SyncPhase;
+  message: string;
+  // Discovery phase progress
+  currentApiKey?: number;
+  totalApiKeys?: number;
+  discoveredDates?: number;
+  // Populate phase progress
+  completedTasks?: number;
+  totalTasks?: number;
+  currentDate?: string;
+  recordsFetched?: number;
+  // Per-key breakdown
+  keySegments?: KeySegment[];
+  // Error info
+  error?: string;
+}
+
+/**
+ * Legacy FetchProgress interface (kept for backwards compatibility)
+ * @deprecated Use SyncProgress instead
+ */
 export interface FetchProgress {
   phase: 'init' | 'dates' | 'fetch' | 'sales' | 'saving' | 'complete' | 'error' | 'cancelled';
   message: string;
@@ -92,7 +143,7 @@ export interface FetchProgress {
   totalKeys?: number;
   // Re-processing info
   datesToReprocess?: number;
-  // Per-key breakdown for segmented progress bar
+  // Per-key breakdown for segmented progress bar (legacy format)
   keySegments?: {
     keyId: string;
     keyName: string;

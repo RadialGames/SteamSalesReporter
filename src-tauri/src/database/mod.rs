@@ -5,6 +5,7 @@ mod api_keys;
 mod cleanup;
 mod migrations;
 mod sales;
+mod sync_tasks;
 
 use rusqlite::Connection;
 use std::path::Path;
@@ -14,7 +15,7 @@ use thiserror::Error;
 // No explicit re-exports needed as methods are on the Database struct
 
 #[allow(dead_code)]
-pub const SCHEMA_VERSION: i32 = 3;
+pub const SCHEMA_VERSION: i32 = 4;
 
 #[derive(Error, Debug)]
 pub enum DatabaseError {

@@ -1,348 +1,396 @@
 // Sync orchestrator for coordinating multi-key Steam sales data synchronization
-// Manages session state for pause/resume functionality
+// Uses a 3-phase approach: (1) discover dates, (2) populate data, (3) compute aggregates
 
-import type { FetchProgress, ApiKeyInfo } from './types';
-import { services } from './index';
+import type { ApiKeyInfo } from './types';
+import type { SyncTask } from './sync-tasks';
+import { services, syncTaskService } from './index';
 import { computeAndStoreAggregates } from '$lib/db/dexie';
+import { fetchSalesForDate, SyncCancelledError } from './steam-api-client';
+import { saveSalesWithOverwrite } from './sync-service';
 
-// Session state for tracking sync progress across pause/resume
-// This is cleared when the modal is closed, ensuring fresh starts work correctly
-export interface KeySyncState {
-  sortedDates: string[]; // Full list of all dates for this key
-  processedDates: Set<string>; // Dates completed in this session
-  newHighwatermark: number; // HWM to save on success
-  apiKey: string; // The actual API key value
-  newDates: number; // Count of new dates (Phase 1)
-  reprocessDates: number; // Count of update dates (Phase 2)
-  phase1Dates: string[]; // New dates (Phase 1) - processed first
-  phase2Dates: string[]; // Update dates (Phase 2) - processed after all Phase 1
+export { SyncCancelledError };
+
+// Number of tasks to process in parallel
+const PARALLEL_BATCH_SIZE = 3;
+
+// Progress phases
+export type SyncPhase =
+  | 'discovery'
+  | 'populate'
+  | 'aggregates'
+  | 'complete'
+  | 'error'
+  | 'cancelled';
+
+export interface SyncProgress {
+  phase: SyncPhase;
+  message: string;
+  // Discovery phase progress
+  currentApiKey?: number;
+  totalApiKeys?: number;
+  discoveredDates?: number;
+  // Populate phase progress
+  completedTasks?: number;
+  totalTasks?: number;
+  currentDate?: string;
+  recordsFetched?: number;
+  // Per-key breakdown
+  keySegments?: KeySegment[];
+  // Error info
+  error?: string;
 }
 
 export interface KeySegment {
   keyId: string;
   keyName: string;
-  newDates: number;
-  reprocessDates: number;
+  pendingTasks: number;
 }
-
-export interface SyncSessionState {
-  keyStates: Map<string, KeySyncState>; // Keyed by apiKeyId
-  keySegments: KeySegment[];
-  totalDates: number;
-  totalRecordsFetched: number;
-}
-
-export type SyncProgress = FetchProgress & { phase: FetchProgress['phase'] | 'cancelled' };
 
 export interface SyncCallbacks {
   onProgress: (progress: SyncProgress) => void;
   getAbortSignal: () => AbortSignal | undefined;
 }
 
-/**
- * Create a new empty sync session state
- */
-export function createSyncSessionState(): SyncSessionState {
-  return {
-    keyStates: new Map(),
-    keySegments: [],
-    totalDates: 0,
-    totalRecordsFetched: 0,
-  };
+export interface SyncResult {
+  totalRecords: number;
+  totalTasks: number;
 }
 
 /**
- * Get total processed dates across all keys in a session
+ * Phase 1: Discovery
+ * - For each API key, call GetChangedDatesForPartner
+ * - Create TODO entries in the database
+ * - Save highwatermark immediately
+ * - Count total TODO items
  */
-export function getTotalProcessedDates(state: SyncSessionState): number {
-  let count = 0;
-  for (const [, keyState] of state.keyStates) {
-    count += keyState.processedDates.size;
-  }
-  return count;
-}
-
-/**
- * Fetch changed dates for all API keys and build session state
- */
-export async function fetchChangedDatesForAllKeys(
+async function discoverChangedDates(
   apiKeys: ApiKeyInfo[],
-  sessionState: SyncSessionState,
   callbacks: SyncCallbacks
-): Promise<{ totalDates: number; totalReprocessDates: number }> {
-  let totalDatesAcrossAllKeys = 0;
-  let totalDatesToReprocess = 0;
+): Promise<{ totalDates: number; keySegments: KeySegment[] }> {
+  let totalDates = 0;
   const keySegments: KeySegment[] = [];
 
   for (let i = 0; i < apiKeys.length; i++) {
     const keyInfo = apiKeys[i];
-    const apiKey = await services.getApiKey(keyInfo.id);
-
-    if (!apiKey) continue;
 
     // Check if cancelled
     if (callbacks.getAbortSignal()?.aborted) {
-      throw new Error('SyncCancelledError');
+      throw new SyncCancelledError();
     }
 
-    const { dates, newHighwatermark } = await services.getChangedDates(apiKey, keyInfo.id);
-
-    // Get existing dates to calculate re-processing count
-    const existingDates = await services.getExistingDates(keyInfo.id);
-
-    // Separate dates into Phase 1 (new) and Phase 2 (updates)
-    const newDates = dates.filter((d) => !existingDates.has(d));
-    const updateDates = dates.filter((d) => existingDates.has(d));
-
-    // Sort each phase chronologically
-    newDates.sort((a, b) => a.localeCompare(b));
-    updateDates.sort((a, b) => a.localeCompare(b));
-
-    totalDatesToReprocess += updateDates.length;
-    totalDatesAcrossAllKeys += dates.length;
-
-    const keyName = keyInfo.displayName || `Key ...${keyInfo.keyHash}`;
-
-    // Store in session state - keep phases separate for ordered processing
-    sessionState.keyStates.set(keyInfo.id, {
-      sortedDates: dates, // Keep full list for tracking
-      processedDates: new Set(),
-      newHighwatermark,
-      apiKey,
-      newDates: newDates.length,
-      reprocessDates: updateDates.length,
-      phase1Dates: newDates, // New dates - processed first
-      phase2Dates: updateDates, // Update dates - processed after all Phase 1
+    callbacks.onProgress({
+      phase: 'discovery',
+      message: `Checking API key ${i + 1} of ${apiKeys.length}...`,
+      currentApiKey: i + 1,
+      totalApiKeys: apiKeys.length,
+      discoveredDates: totalDates,
     });
 
+    // Get the actual API key
+    const apiKey = await services.getApiKey(keyInfo.id);
+    if (!apiKey) continue;
+
+    // Call GetChangedDatesForPartner
+    const { dates, newHighwatermark } = await services.getChangedDates(apiKey, keyInfo.id);
+
+    if (dates.length > 0) {
+      // Create TODO entries in the database
+      // This also deletes existing sales data for these dates
+      await syncTaskService.createSyncTasks(keyInfo.id, dates);
+
+      // Save highwatermark immediately after creating tasks
+      await services.setHighwatermark(keyInfo.id, newHighwatermark);
+
+      totalDates += dates.length;
+    }
+
+    const keyName = keyInfo.displayName || `Key ...${keyInfo.keyHash}`;
     keySegments.push({
       keyId: keyInfo.id,
       keyName,
-      newDates: newDates.length,
-      reprocessDates: updateDates.length,
+      pendingTasks: dates.length,
     });
 
     callbacks.onProgress({
-      phase: 'dates',
-      message: `Checking API key ${i + 1} of ${apiKeys.length}...`,
-      current: i + 1,
-      total: apiKeys.length,
-      recordsFetched: 0,
-      currentKeyId: keyInfo.id,
-      currentKeyName: keyName,
-      currentKeyIndex: i,
-      totalKeys: apiKeys.length,
-      datesToReprocess: totalDatesToReprocess,
+      phase: 'discovery',
+      message: `Found ${dates.length} dates for ${keyName}`,
+      currentApiKey: i + 1,
+      totalApiKeys: apiKeys.length,
+      discoveredDates: totalDates,
       keySegments: [...keySegments],
     });
   }
 
-  // Update session state with final counts
-  sessionState.keySegments = keySegments;
-  sessionState.totalDates = totalDatesAcrossAllKeys;
-
-  return { totalDates: totalDatesAcrossAllKeys, totalReprocessDates: totalDatesToReprocess };
+  return { totalDates, keySegments };
 }
 
 /**
- * Process dates for a specific key and phase
+ * Process a single task: fetch all sales data for a date
  */
-export async function processDatesForKey(
-  keyId: string,
-  datesToProcess: string[],
-  phaseLabel: string,
-  sessionState: SyncSessionState,
-  totalDatesAcrossAllKeys: number,
-  totalDatesToReprocess: number,
+async function processTask(task: SyncTask, apiKey: string, signal?: AbortSignal): Promise<number> {
+  // Fetch all sales for this date (handles pagination internally)
+  const sales = await fetchSalesForDate(apiKey, task.apiKeyId, task.date, signal);
+
+  // Save to database
+  if (sales.length > 0) {
+    await saveSalesWithOverwrite(sales, task.apiKeyId);
+  }
+
+  return sales.length;
+}
+
+/**
+ * Phase 2: Populate Data
+ * - Get all pending tasks from database
+ * - Process in parallel batches
+ * - Mark as done after completion
+ */
+async function populateData(
+  keySegments: KeySegment[],
+  callbacks: SyncCallbacks
+): Promise<{ totalRecords: number; totalTasks: number }> {
+  // Get all pending tasks
+  const allTasks = await syncTaskService.getPendingTasks();
+
+  if (allTasks.length === 0) {
+    return { totalRecords: 0, totalTasks: 0 };
+  }
+
+  const totalTasks = allTasks.length;
+  let completedTasks = 0;
+  let totalRecords = 0;
+
+  // Build a map of apiKeyId -> apiKey for quick lookup
+  const apiKeyMap = new Map<string, string>();
+  for (const segment of keySegments) {
+    const apiKey = await services.getApiKey(segment.keyId);
+    if (apiKey) {
+      apiKeyMap.set(segment.keyId, apiKey);
+    }
+  }
+
+  // Process tasks in parallel batches
+  for (let i = 0; i < allTasks.length; i += PARALLEL_BATCH_SIZE) {
+    // Check if cancelled
+    if (callbacks.getAbortSignal()?.aborted) {
+      throw new SyncCancelledError();
+    }
+
+    const batch = allTasks.slice(i, i + PARALLEL_BATCH_SIZE);
+
+    // Mark all tasks in batch as in_progress
+    await Promise.all(batch.map((task) => syncTaskService.markTaskInProgress(task.id)));
+
+    // Process batch in parallel
+    const results = await Promise.all(
+      batch.map(async (task) => {
+        const apiKey = apiKeyMap.get(task.apiKeyId);
+        if (!apiKey) {
+          console.warn(`No API key found for task ${task.id}`);
+          return { task, records: 0 };
+        }
+
+        try {
+          const records = await processTask(task, apiKey, callbacks.getAbortSignal());
+          return { task, records };
+        } catch (err) {
+          if (err instanceof SyncCancelledError) {
+            throw err;
+          }
+          console.error(`Error processing task ${task.id}:`, err);
+          return { task, records: 0 };
+        }
+      })
+    );
+
+    // Mark tasks as done and update progress
+    for (const { task, records } of results) {
+      await syncTaskService.markTaskDone(task.id);
+      totalRecords += records;
+      completedTasks++;
+    }
+
+    // Update progress
+    const lastTask = batch[batch.length - 1];
+    callbacks.onProgress({
+      phase: 'populate',
+      message: `Fetching sales data...`,
+      completedTasks,
+      totalTasks,
+      currentDate: lastTask.date,
+      recordsFetched: totalRecords,
+      keySegments,
+    });
+
+    // Yield to UI
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  return { totalRecords, totalTasks };
+}
+
+/**
+ * Phase 3: Compute Aggregates
+ */
+async function computeAggregates(
+  totalRecords: number,
+  keySegments: KeySegment[],
   callbacks: SyncCallbacks
 ): Promise<void> {
-  const keyState = sessionState.keyStates.get(keyId);
-  if (!keyState || datesToProcess.length === 0) return;
+  if (totalRecords === 0) return;
 
-  const segment = sessionState.keySegments.find((s) => s.keyId === keyId);
-  if (!segment) return;
+  callbacks.onProgress({
+    phase: 'aggregates',
+    message: 'Computing aggregates for faster loading...',
+    recordsFetched: totalRecords,
+    keySegments,
+  });
 
-  const keyName = segment.keyName;
-
-  // Filter out already processed dates
-  const remainingDates = datesToProcess.filter((d) => !keyState.processedDates.has(d));
-  if (remainingDates.length === 0) return;
-
-  // Capture the record count BEFORE starting this fetch call
-  const recordsBeforeThisFetch = sessionState.totalRecordsFetched;
-
-  // Fetch data from Steam API
-  await services.fetchSalesData({
-    apiKey: keyState.apiKey,
-    apiKeyId: keyId,
-    signal: callbacks.getAbortSignal(),
-    datesToFetch: remainingDates,
-    onProgress: (progress) => {
-      // Use processedDates.size as the authoritative count
-      const totalProcessed = getTotalProcessedDates(sessionState);
-
-      // progress.recordsFetched is cumulative within THIS fetch call
-      const totalRecordsFetched = recordsBeforeThisFetch + (progress.recordsFetched ?? 0);
-
-      // Update session state so it's correct if user pauses
-      sessionState.totalRecordsFetched = totalRecordsFetched;
-
-      callbacks.onProgress({
-        ...progress,
-        message: `${phaseLabel}: Fetching sales data...`,
-        current: totalProcessed,
-        total: totalDatesAcrossAllKeys,
-        recordsFetched: totalRecordsFetched,
-        currentKeyId: keyId,
-        currentKeyName: keyName,
-        totalKeys: sessionState.keySegments.length,
-        datesToReprocess: totalDatesToReprocess,
-        keySegments: sessionState.keySegments,
-      });
-    },
-    onDateProcessed: (date: string) => {
-      // Track this date as processed in session state
-      keyState.processedDates.add(date);
-    },
+  await computeAndStoreAggregates((message, progress) => {
+    callbacks.onProgress({
+      phase: 'aggregates',
+      message,
+      completedTasks: progress,
+      totalTasks: 100,
+      recordsFetched: totalRecords,
+      keySegments,
+    });
   });
 }
 
 /**
- * Run the full sync process for all keys
+ * Run the full sync process
  */
 export async function runSync(
   apiKeys: ApiKeyInfo[],
-  sessionState: SyncSessionState,
-  callbacks: SyncCallbacks,
-  isResuming: boolean
-): Promise<{ totalRecords: number }> {
-  let totalDatesAcrossAllKeys: number;
-  let totalDatesToReprocess: number;
+  callbacks: SyncCallbacks
+): Promise<SyncResult> {
+  // Phase 1: Discovery
+  callbacks.onProgress({
+    phase: 'discovery',
+    message: 'Checking for updates across all API keys...',
+    currentApiKey: 0,
+    totalApiKeys: apiKeys.length,
+    discoveredDates: 0,
+  });
 
-  if (isResuming) {
-    // SCENARIO A: Resume from pause - use cached session state
-    totalDatesAcrossAllKeys = sessionState.totalDates;
-    totalDatesToReprocess = sessionState.keySegments.reduce((sum, k) => sum + k.reprocessDates, 0);
+  const { keySegments } = await discoverChangedDates(apiKeys, callbacks);
 
-    // Calculate current progress from processed dates
-    const processedCount = getTotalProcessedDates(sessionState);
+  // Also count any existing pending tasks from previous incomplete syncs
+  const existingPendingCount = await syncTaskService.countAllPendingTasks();
 
-    callbacks.onProgress({
-      phase: 'sales',
-      message: 'Resuming sync...',
-      current: processedCount,
-      total: totalDatesAcrossAllKeys,
-      recordsFetched: sessionState.totalRecordsFetched,
-      keySegments: sessionState.keySegments,
-    });
-  } else {
-    // SCENARIO B: Fresh start - fetch dates from Steam API
-    callbacks.onProgress({
-      phase: 'dates',
-      message: 'Checking for updates across all API keys...',
-      current: 0,
-      total: apiKeys.length,
-      recordsFetched: 0,
-    });
-
-    const result = await fetchChangedDatesForAllKeys(apiKeys, sessionState, callbacks);
-    totalDatesAcrossAllKeys = result.totalDates;
-    totalDatesToReprocess = result.totalReprocessDates;
-  }
-
-  // If no dates to process, we're done
-  if (totalDatesAcrossAllKeys === 0) {
+  // If no tasks to process, we're done
+  if (existingPendingCount === 0) {
     callbacks.onProgress({
       phase: 'complete',
       message: 'Already up to date!',
-      current: 0,
-      total: 0,
+      completedTasks: 0,
+      totalTasks: 0,
       recordsFetched: 0,
     });
-    return { totalRecords: 0 };
+    return { totalRecords: 0, totalTasks: 0 };
   }
 
-  // PHASE 1: Process all NEW dates across all keys first
-  for (const segment of sessionState.keySegments) {
-    const keyState = sessionState.keyStates.get(segment.keyId);
-    if (!keyState) continue;
-
-    if (callbacks.getAbortSignal()?.aborted) {
-      throw new Error('SyncCancelledError');
-    }
-
-    if (keyState.phase1Dates.length > 0) {
-      await processDatesForKey(
-        segment.keyId,
-        keyState.phase1Dates,
-        'Phase 1 (New Data)',
-        sessionState,
-        totalDatesAcrossAllKeys,
-        totalDatesToReprocess,
-        callbacks
-      );
-    }
+  // Update keySegments with actual pending task counts
+  const pendingCounts = await syncTaskService.countPendingTasks();
+  for (const segment of keySegments) {
+    segment.pendingTasks = pendingCounts.get(segment.keyId) || 0;
   }
 
-  // PHASE 2: Process all UPDATE dates across all keys
-  for (const segment of sessionState.keySegments) {
-    const keyState = sessionState.keyStates.get(segment.keyId);
-    if (!keyState) continue;
+  // Phase 2: Populate Data
+  callbacks.onProgress({
+    phase: 'populate',
+    message: 'Starting data fetch...',
+    completedTasks: 0,
+    totalTasks: existingPendingCount,
+    recordsFetched: 0,
+    keySegments,
+  });
 
-    if (callbacks.getAbortSignal()?.aborted) {
-      throw new Error('SyncCancelledError');
-    }
+  const { totalRecords, totalTasks } = await populateData(keySegments, callbacks);
 
-    if (keyState.phase2Dates.length > 0) {
-      await processDatesForKey(
-        segment.keyId,
-        keyState.phase2Dates,
-        'Phase 2 (Updates)',
-        sessionState,
-        totalDatesAcrossAllKeys,
-        totalDatesToReprocess,
-        callbacks
-      );
-    }
+  // Phase 3: Compute Aggregates
+  await computeAggregates(totalRecords, keySegments, callbacks);
 
-    // Save highwatermark AFTER all dates for this key are processed
-    if (keyState.processedDates.size === keyState.sortedDates.length) {
-      const keyInfo = apiKeys.find((k) => k.id === segment.keyId);
-      if (keyInfo) {
-        const currentHighwatermark = await services.getHighwatermark(keyInfo.id);
-        if (keyState.newHighwatermark > currentHighwatermark) {
-          await services.setHighwatermark(keyInfo.id, keyState.newHighwatermark);
-        }
-      }
-    }
+  // Clean up completed tasks
+  await syncTaskService.clearCompletedTasks();
+
+  // Done
+  callbacks.onProgress({
+    phase: 'complete',
+    message: `Sync complete! Processed ${totalRecords.toLocaleString()} records`,
+    completedTasks: totalTasks,
+    totalTasks,
+    recordsFetched: totalRecords,
+    keySegments,
+  });
+
+  return { totalRecords, totalTasks };
+}
+
+/**
+ * Resume a previously interrupted sync
+ * Processes any remaining pending tasks
+ */
+export async function resumeSync(
+  apiKeys: ApiKeyInfo[],
+  callbacks: SyncCallbacks
+): Promise<SyncResult> {
+  // Build key segments from API keys
+  const keySegments: KeySegment[] = [];
+  const pendingCounts = await syncTaskService.countPendingTasks();
+
+  for (const keyInfo of apiKeys) {
+    const keyName = keyInfo.displayName || `Key ...${keyInfo.keyHash}`;
+    keySegments.push({
+      keyId: keyInfo.id,
+      keyName,
+      pendingTasks: pendingCounts.get(keyInfo.id) || 0,
+    });
   }
 
-  // FINAL PHASE: Compute aggregates ONCE at the very end of sync
-  // This was previously called after each key/phase in fetchSalesData,
-  // causing 30-60 second delays between transitions
-  if (sessionState.totalRecordsFetched > 0) {
+  const totalPending = await syncTaskService.countAllPendingTasks();
+
+  if (totalPending === 0) {
     callbacks.onProgress({
-      phase: 'saving',
-      message: 'Computing aggregates for faster loading...',
-      current: 0,
-      total: 100,
-      recordsFetched: sessionState.totalRecordsFetched,
-      keySegments: sessionState.keySegments,
+      phase: 'complete',
+      message: 'No pending tasks to resume',
+      completedTasks: 0,
+      totalTasks: 0,
+      recordsFetched: 0,
     });
-
-    await computeAndStoreAggregates((message, progress) => {
-      callbacks.onProgress({
-        phase: 'saving',
-        message,
-        current: progress,
-        total: 100,
-        recordsFetched: sessionState.totalRecordsFetched,
-        keySegments: sessionState.keySegments,
-      });
-    });
+    return { totalRecords: 0, totalTasks: 0 };
   }
 
-  return { totalRecords: sessionState.totalRecordsFetched };
+  // Go straight to populate phase
+  callbacks.onProgress({
+    phase: 'populate',
+    message: `Resuming sync with ${totalPending} pending tasks...`,
+    completedTasks: 0,
+    totalTasks: totalPending,
+    recordsFetched: 0,
+    keySegments,
+  });
+
+  const { totalRecords, totalTasks } = await populateData(keySegments, callbacks);
+
+  // Phase 3: Compute Aggregates
+  await computeAggregates(totalRecords, keySegments, callbacks);
+
+  // Clean up completed tasks
+  await syncTaskService.clearCompletedTasks();
+
+  // Done
+  callbacks.onProgress({
+    phase: 'complete',
+    message: `Sync complete! Processed ${totalRecords.toLocaleString()} records`,
+    completedTasks: totalTasks,
+    totalTasks,
+    recordsFetched: totalRecords,
+    keySegments,
+  });
+
+  return { totalRecords, totalTasks };
 }
 
 /**
@@ -355,4 +403,19 @@ export function isCancellationError(err: unknown): boolean {
       err.name === 'AbortError' ||
       err.message === 'SyncCancelledError')
   );
+}
+
+/**
+ * Check if there are pending tasks from a previous incomplete sync
+ */
+export async function hasPendingTasks(): Promise<boolean> {
+  const count = await syncTaskService.countAllPendingTasks();
+  return count > 0;
+}
+
+/**
+ * Get the count of pending tasks
+ */
+export async function getPendingTaskCount(): Promise<number> {
+  return syncTaskService.countAllPendingTasks();
 }

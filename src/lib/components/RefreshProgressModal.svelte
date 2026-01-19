@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import type { FetchProgress } from '$lib/services/types';
+  import type { SyncProgress, SyncPhase } from '$lib/services/types';
   import { startWindowDrag } from '$lib/utils/tauri';
 
   interface Props {
-    progress: FetchProgress & { phase: FetchProgress['phase'] | 'cancelled' };
+    progress: SyncProgress;
     oncancel?: () => void;
     onabort?: () => void;
     onresume?: () => void;
@@ -36,21 +36,31 @@
   });
 
   // Track previous phase to detect transitions
-  let previousPhase = $state<string | null>(null);
+  let previousPhase = $state<SyncPhase | null>(null);
+
+  // Calculate current count based on phase
+  let currentCount = $derived(
+    progress.phase === 'discovery'
+      ? (progress.discoveredDates ?? 0)
+      : (progress.completedTasks ?? 0)
+  );
+
+  // Calculate total count based on phase
+  let totalCount = $derived(
+    progress.phase === 'discovery' ? (progress.totalApiKeys ?? 0) : (progress.totalTasks ?? 0)
+  );
 
   // Track item completions and reset state on phase changes
   $effect(() => {
-    // Track progress.phase and progress.current as dependencies
+    // Track progress.phase and currentCount as dependencies
     const phase = progress.phase;
-    const current = progress.current;
-    const isFetchPhase = phase === 'sales' || phase === 'fetch';
+    const current = currentCount;
+    const isPopulatePhase = phase === 'populate';
 
     // Use untrack to read/write local state without circular dependency
     untrack(() => {
-      // Reset isAborting when:
-      // 1. Starting a new sync (phase goes to init)
-      // 2. Resuming from paused state (phase goes from 'cancelled' to active phase)
-      if (phase === 'init' || (previousPhase === 'cancelled' && phase !== 'cancelled')) {
+      // Reset isAborting when starting a new sync or resuming
+      if (phase === 'discovery' || (previousPhase === 'cancelled' && phase !== 'cancelled')) {
         isAborting = false;
       }
 
@@ -74,8 +84,8 @@
         lastUpdateTime = null;
       }
 
-      // Track new completions during fetch phase
-      if (isFetchPhase && current > lastItemCount) {
+      // Track new completions during populate phase
+      if (isPopulatePhase && current > lastItemCount) {
         const now = Date.now();
         const newCompletions = current - lastItemCount;
 
@@ -96,13 +106,13 @@
 
   // Calculate raw estimate from rolling window (pure calculation)
   let rawEstimateMs = $derived.by(() => {
-    const isFetchPhase = progress.phase === 'sales' || progress.phase === 'fetch';
+    const isPopulatePhase = progress.phase === 'populate';
 
-    if (!isFetchPhase || itemCompletionTimes.length < MIN_SAMPLES_FOR_ESTIMATE) {
+    if (!isPopulatePhase || itemCompletionTimes.length < MIN_SAMPLES_FOR_ESTIMATE) {
       return null;
     }
 
-    const remaining = progress.total - progress.current;
+    const remaining = totalCount - currentCount;
     if (remaining <= 0) return null;
 
     // Calculate average time per item from rolling window
@@ -175,15 +185,13 @@
     onabort?.();
   }
 
-  let percentage = $derived(
-    progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0
-  );
+  let percentage = $derived(totalCount > 0 ? Math.round((currentCount / totalCount) * 100) : 0);
 
   // Format the smoothed estimate for display
   let estimatedTimeRemaining = $derived.by(() => {
-    const isFetchPhase = progress.phase === 'sales' || progress.phase === 'fetch';
+    const isPopulatePhase = progress.phase === 'populate';
 
-    if (!isFetchPhase || smoothedEstimateMs === null || smoothedEstimateMs < 5000) {
+    if (!isPopulatePhase || smoothedEstimateMs === null || smoothedEstimateMs < 5000) {
       return null;
     }
 
@@ -202,11 +210,9 @@
 
   let phaseEmoji = $derived(
     {
-      init: '&#128300;', // Magnifying glass
-      dates: '&#128197;', // Calendar
-      fetch: '&#128176;', // Money bag
-      sales: '&#128176;', // Money bag
-      saving: '&#128190;', // Floppy disk
+      discovery: '&#128269;', // Magnifying glass
+      populate: '&#128176;', // Money bag
+      aggregates: '&#128190;', // Floppy disk
       complete: '&#10024;', // Sparkles
       error: '&#128557;', // Crying face
       cancelled: '&#9208;', // Pause button
@@ -215,11 +221,9 @@
 
   let phaseColor = $derived(
     {
-      init: 'from-purple-500 to-pink-500',
-      dates: 'from-blue-500 to-purple-500',
-      fetch: 'from-green-500 to-blue-500',
-      sales: 'from-green-500 to-blue-500',
-      saving: 'from-yellow-500 to-green-500',
+      discovery: 'from-blue-500 to-purple-500',
+      populate: 'from-green-500 to-blue-500',
+      aggregates: 'from-yellow-500 to-green-500',
       complete: 'from-pink-500 to-purple-500',
       error: 'from-red-500 to-orange-500',
       cancelled: 'from-yellow-500 to-amber-500',
@@ -230,59 +234,44 @@
     progress.phase !== 'complete' &&
       progress.phase !== 'error' &&
       progress.phase !== 'cancelled' &&
-      progress.phase !== 'saving'
+      progress.phase !== 'aggregates'
   );
 
-  // Check if we're already up to date (0 dates to process)
-  let isAlreadyUpToDate = $derived(progress.phase === 'complete' && progress.total === 0);
+  // Check if we're already up to date (0 tasks to process)
+  let isAlreadyUpToDate = $derived(
+    progress.phase === 'complete' && (progress.totalTasks ?? 0) === 0
+  );
 
-  // Segmented progress bar data
+  // Segmented progress bar data for populate phase
   let progressSegments = $derived.by(() => {
     const segments = progress.keySegments;
-    if (!segments || segments.length === 0 || progress.total === 0) {
+    if (!segments || segments.length === 0 || progress.phase !== 'populate') {
       return null;
     }
 
-    const total = progress.total;
-    const current = progress.current;
+    const total = progress.totalTasks ?? 0;
+    if (total === 0) return null;
+
+    const completed = progress.completedTasks ?? 0;
     let cumulative = 0;
 
-    // Build segment data with widths and fill amounts
-    // IMPORTANT: Process all Phase 1 (new) segments first, then all Phase 2 (reprocess) segments
-    // This matches the actual processing order in sync-orchestrator.ts
+    // Build segment data with widths
     const result: {
       keyName: string;
-      type: 'new' | 'reprocess';
       width: number; // percentage width of this segment
       startAt: number; // cumulative start position
-      count: number; // number of dates in this segment
+      count: number; // number of tasks in this segment
     }[] = [];
 
-    // PHASE 1: Add all "new" segments for all keys first
     for (const seg of segments) {
-      if (seg.newDates > 0) {
+      if (seg.pendingTasks > 0) {
         result.push({
           keyName: seg.keyName,
-          type: 'new',
-          width: (seg.newDates / total) * 100,
+          width: (seg.pendingTasks / total) * 100,
           startAt: cumulative,
-          count: seg.newDates,
+          count: seg.pendingTasks,
         });
-        cumulative += seg.newDates;
-      }
-    }
-
-    // PHASE 2: Add all "reprocess" segments for all keys
-    for (const seg of segments) {
-      if (seg.reprocessDates > 0) {
-        result.push({
-          keyName: seg.keyName,
-          type: 'reprocess',
-          width: (seg.reprocessDates / total) * 100,
-          startAt: cumulative,
-          count: seg.reprocessDates,
-        });
-        cumulative += seg.reprocessDates;
+        cumulative += seg.pendingTasks;
       }
     }
 
@@ -291,22 +280,23 @@
       const segmentEnd = seg.startAt + seg.count;
       let fillPercent = 0;
 
-      if (current >= segmentEnd) {
+      if (completed >= segmentEnd) {
         fillPercent = 100;
-      } else if (current > seg.startAt) {
-        fillPercent = ((current - seg.startAt) / seg.count) * 100;
+      } else if (completed > seg.startAt) {
+        fillPercent = ((completed - seg.startAt) / seg.count) * 100;
       }
 
       return { ...seg, fillPercent };
     });
   });
 
-  // Colors for segments - alternate between keys, different shades for new vs reprocess
+  // Colors for segments - one color per key
   const segmentColors = [
-    { new: 'from-green-500 to-emerald-500', reprocess: 'from-yellow-500 to-amber-500' },
-    { new: 'from-blue-500 to-cyan-500', reprocess: 'from-orange-500 to-yellow-500' },
-    { new: 'from-purple-500 to-pink-500', reprocess: 'from-red-400 to-orange-400' },
-    { new: 'from-teal-500 to-green-500', reprocess: 'from-amber-500 to-yellow-500' },
+    'from-green-500 to-emerald-500',
+    'from-blue-500 to-cyan-500',
+    'from-purple-500 to-pink-500',
+    'from-teal-500 to-green-500',
+    'from-orange-500 to-yellow-500',
   ];
 </script>
 
@@ -340,6 +330,12 @@
               Oops! Something went wrong
             {:else if progress.phase === 'cancelled'}
               Sync Paused
+            {:else if progress.phase === 'discovery'}
+              Discovering Changes
+            {:else if progress.phase === 'populate'}
+              Fetching Sales Data
+            {:else if progress.phase === 'aggregates'}
+              Computing Summaries
             {:else}
               Syncing Sales Data
             {/if}
@@ -367,12 +363,22 @@
         <!-- Progress Bar -->
         <div class="mb-4">
           <div class="flex justify-between text-sm text-purple-300 mb-2">
-            <span>Progress</span>
+            <span>
+              {#if progress.phase === 'discovery'}
+                Step 1: Discovery
+              {:else if progress.phase === 'populate'}
+                Step 2: Fetching Data
+              {:else if progress.phase === 'aggregates'}
+                Step 3: Computing
+              {:else}
+                Progress
+              {/if}
+            </span>
             <span>{percentage}%</span>
           </div>
 
-          {#if progress.phase === 'saving'}
-            <!-- Saving/Aggregates Progress Bar -->
+          {#if progress.phase === 'aggregates'}
+            <!-- Aggregates Progress Bar -->
             <div class="h-4 bg-purple-900/50 rounded-full overflow-hidden">
               <div
                 class="h-full bg-gradient-to-r {phaseColor} transition-all duration-300 ease-out rounded-full relative"
@@ -388,18 +394,13 @@
             <!-- Segmented Progress Bar -->
             <div class="h-6 bg-purple-900/50 rounded-full overflow-hidden flex relative">
               {#each progressSegments as segment, i (i)}
-                {@const keyIndex =
-                  progress.keySegments?.findIndex((k) => k.keyName === segment.keyName) ?? 0}
-                {@const colors = segmentColors[keyIndex % segmentColors.length]}
-                {@const gradientClass = segment.type === 'new' ? colors.new : colors.reprocess}
+                {@const gradientClass = segmentColors[i % segmentColors.length]}
                 <div
                   class="h-full relative overflow-hidden transition-all duration-300 group cursor-help"
                   style="width: {segment.width}%"
                 >
                   <!-- Background (unfilled) -->
-                  <div
-                    class="absolute inset-0 {segment.type === 'new' ? 'bg-white/5' : 'bg-white/10'}"
-                  ></div>
+                  <div class="absolute inset-0 bg-white/5"></div>
 
                   <!-- Filled portion -->
                   <div
@@ -420,8 +421,7 @@
                   <div
                     class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-gray-900 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10"
                   >
-                    {segment.keyName}: {segment.count}
-                    {segment.type === 'new' ? 'new' : 'update'} dates
+                    {segment.keyName}: {segment.count} dates
                     <div
                       class="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"
                     ></div>
@@ -432,22 +432,12 @@
 
             <!-- Legend -->
             <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs">
-              {#each progress.keySegments ?? [] as keyInfo, keyIndex (keyInfo.keyName)}
-                {@const colors = segmentColors[keyIndex % segmentColors.length]}
+              {#each progress.keySegments ?? [] as keyInfo, keyIndex (keyInfo.keyId)}
+                {@const color = segmentColors[keyIndex % segmentColors.length]}
                 <div class="flex items-center gap-2">
-                  <span class="font-medium text-purple-200">{keyInfo.keyName}:</span>
-                  {#if keyInfo.newDates > 0}
-                    <span class="flex items-center gap-1">
-                      <span class="w-2 h-2 rounded-full bg-gradient-to-r {colors.new}"></span>
-                      <span class="text-purple-300">{keyInfo.newDates} new</span>
-                    </span>
-                  {/if}
-                  {#if keyInfo.reprocessDates > 0}
-                    <span class="flex items-center gap-1">
-                      <span class="w-2 h-2 rounded-full bg-gradient-to-r {colors.reprocess}"></span>
-                      <span class="text-purple-300">{keyInfo.reprocessDates} updates</span>
-                    </span>
-                  {/if}
+                  <span class="w-2 h-2 rounded-full bg-gradient-to-r {color}"></span>
+                  <span class="text-purple-200">{keyInfo.keyName}</span>
+                  <span class="text-purple-400">({keyInfo.pendingTasks} dates)</span>
                 </div>
               {/each}
             </div>
@@ -476,19 +466,23 @@
         <div class="grid grid-cols-2 gap-3 mb-4">
           <div class="glass-card p-3 text-center">
             <div class="text-2xl font-bold text-purple-200">
-              {#if progress.phase === 'saving'}
+              {#if progress.phase === 'discovery'}
+                {(progress.currentApiKey ?? 0).toLocaleString()}/{(
+                  progress.totalApiKeys ?? 0
+                ).toLocaleString()}
+              {:else if progress.phase === 'aggregates'}
                 {percentage}%
-              {:else if progress.phase === 'dates'}
-                {progress.current.toLocaleString()}/{progress.total.toLocaleString()}
               {:else}
-                {progress.current.toLocaleString()}/{progress.total.toLocaleString()}
+                {(progress.completedTasks ?? 0).toLocaleString()}/{(
+                  progress.totalTasks ?? 0
+                ).toLocaleString()}
               {/if}
             </div>
             <div class="text-xs text-purple-400">
-              {#if progress.phase === 'saving'}
+              {#if progress.phase === 'discovery'}
+                API keys checked
+              {:else if progress.phase === 'aggregates'}
                 Aggregates computed
-              {:else if progress.phase === 'dates'}
-                Keys checked
               {:else}
                 Dates processed
               {/if}
@@ -496,9 +490,19 @@
           </div>
           <div class="glass-card p-3 text-center">
             <div class="text-2xl font-bold text-purple-200">
-              {(progress.recordsFetched ?? 0).toLocaleString()}
+              {#if progress.phase === 'discovery'}
+                {(progress.discoveredDates ?? 0).toLocaleString()}
+              {:else}
+                {(progress.recordsFetched ?? 0).toLocaleString()}
+              {/if}
             </div>
-            <div class="text-xs text-purple-400">Records fetched</div>
+            <div class="text-xs text-purple-400">
+              {#if progress.phase === 'discovery'}
+                Dates discovered
+              {:else}
+                Records fetched
+              {/if}
+            </div>
           </div>
         </div>
       {/if}
@@ -564,7 +568,15 @@
           <div class="flex-1 flex flex-col items-center justify-center gap-1 text-purple-300">
             <div class="flex items-center gap-2">
               <span class="inline-block animate-spin">&#10226;</span>
-              Syncing...
+              {#if progress.phase === 'discovery'}
+                Discovering...
+              {:else if progress.phase === 'populate'}
+                Fetching...
+              {:else if progress.phase === 'aggregates'}
+                Computing...
+              {:else}
+                Syncing...
+              {/if}
             </div>
             {#if progress.currentDate}
               <div class="text-xs text-purple-400 font-mono">
@@ -593,15 +605,14 @@
       {#if progress.phase !== 'complete' && progress.phase !== 'error' && progress.phase !== 'cancelled'}
         <div class="mt-6 pt-4 border-t border-white/10 text-center">
           <p class="text-xs text-purple-400 italic">
-            {#if progress.phase === 'dates'}
-              &#128161; Counting dates across all API keys for accurate time estimates...
-            {:else if progress.phase === 'fetch' || progress.phase === 'sales'}
-              &#128161; Tip: New dates are processed first. Cancel anytime - your data is saved
-              incrementally!
-            {:else if progress.phase === 'saving'}
-              &#128161; Computing summaries for faster dashboard loading...
+            {#if progress.phase === 'discovery'}
+              &#128161; Step 1 of 3: Finding dates with new or updated sales data...
+            {:else if progress.phase === 'populate'}
+              &#128161; Step 2 of 3: Downloading sales records. Cancel anytime - progress is saved!
+            {:else if progress.phase === 'aggregates'}
+              &#128161; Step 3 of 3: Computing summaries for faster dashboard loading...
             {:else}
-              &#128161; Using highwatermark to check for new data since last sync...
+              &#128161; Processing your sales data...
             {/if}
           </p>
         </div>
