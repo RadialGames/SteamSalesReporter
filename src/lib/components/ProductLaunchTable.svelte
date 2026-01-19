@@ -1,5 +1,8 @@
 <script lang="ts">
   import type { SalesRecord } from '$lib/services/types';
+  import { formatCurrency, formatNumber } from '$lib/utils/formatters';
+  import { calculateLaunchDays, calculateDayTotals } from '$lib/utils/launch-metrics';
+  import { generateCsv, copyToClipboard as clipboardCopy, downloadFile, sanitizeFilename } from '$lib/utils/csv-export';
 
   interface Props {
     id: number;
@@ -11,88 +14,13 @@
 
   let { id, name, idLabel = 'App ID', records, maxDays }: Props = $props();
 
-  interface DayData {
-    day: number;
-    date: string;
-    sold: number;
-    returned: number;
-    activated: number;
-    bundle: number;
-    netRevenue: number;
-  }
-
   // Calculate launch day and aggregate data by day offset
-  const tableData = $derived(() => {
-    // Find launch day: earliest date with netSalesUsd > 0
-    const datesWithRevenue = records
-      .filter(r => r.netSalesUsd && r.netSalesUsd > 0)
-      .map(r => r.date)
-      .sort();
-    
-    if (datesWithRevenue.length === 0) {
-      return { launchDate: null, days: [] as DayData[] };
-    }
-
-    const launchDate = datesWithRevenue[0];
-    const launchTime = new Date(launchDate).getTime();
-
-    // Group records by day offset from launch
-    const dayMap = new Map<number, DayData>();
-
-    for (const record of records) {
-      const recordTime = new Date(record.date).getTime();
-      const dayOffset = Math.floor((recordTime - launchTime) / (1000 * 60 * 60 * 24));
-      
-      // Only include days within maxDays range
-      if (dayOffset < 0 || dayOffset >= maxDays) continue;
-
-      if (!dayMap.has(dayOffset)) {
-        // Calculate the actual date for this day offset
-        const dayDate = new Date(launchTime + dayOffset * 24 * 60 * 60 * 1000);
-        const dateStr = dayDate.toISOString().split('T')[0];
-        
-        dayMap.set(dayOffset, {
-          day: dayOffset,
-          date: dateStr,
-          sold: 0,
-          returned: 0,
-          activated: 0,
-          bundle: 0,
-          netRevenue: 0
-        });
-      }
-
-      const dayData = dayMap.get(dayOffset)!;
-      dayData.sold += record.grossUnitsSold ?? 0;
-      dayData.returned += record.grossUnitsReturned ?? 0;
-      dayData.activated += record.grossUnitsActivated ?? 0;
-      dayData.netRevenue += record.netSalesUsd ?? 0;
-      
-      // Count units from bundle sales (where bundleid exists)
-      if (record.bundleid != null) {
-        dayData.bundle += (record.grossUnitsSold ?? 0) + (record.grossUnitsActivated ?? 0);
-      }
-    }
-
-    // Convert to array and sort by day
-    const days = Array.from(dayMap.values()).sort((a, b) => a.day - b.day);
-
-    return { launchDate, days };
-  });
-
-  function formatCurrency(value: number): string {
-    return '$' + value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-
-  function formatNumber(value: number): string {
-    if (value === 0) return '-';
-    return value.toLocaleString();
-  }
+  const tableData = $derived(calculateLaunchDays(records, maxDays));
 
   let copyFeedback = $state(false);
 
   function generateCsvContent(): string {
-    const data = tableData();
+    const data = tableData;
     if (!data.launchDate || data.days.length === 0) return '';
 
     const headers = ['Day', 'Date', 'Units Sold', 'Returns', 'Activations', 'Bundle', 'Net Revenue (USD)'];
@@ -106,22 +34,17 @@
       d.netRevenue.toFixed(2)
     ]);
 
-    return [
-      headers.join(','),
-      ...rows.map(row => row.join(','))
-    ].join('\n');
+    return generateCsv(headers, rows);
   }
 
   async function copyToClipboard() {
     const csvContent = generateCsvContent();
     if (!csvContent) return;
 
-    try {
-      await navigator.clipboard.writeText(csvContent);
+    const success = await clipboardCopy(csvContent);
+    if (success) {
       copyFeedback = true;
       setTimeout(() => copyFeedback = false, 2000);
-    } catch (err) {
-      console.error('Failed to copy to clipboard:', err);
     }
   }
 
@@ -129,31 +52,11 @@
     const csvContent = generateCsvContent();
     if (!csvContent) return;
 
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `${name.replace(/[^a-z0-9]/gi, '_')}_launch_report.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    downloadFile(csvContent, `${sanitizeFilename(name)}_launch_report.csv`);
   }
 
   // Calculate totals
-  const totals = $derived(() => {
-    const data = tableData();
-    return data.days.reduce(
-      (acc, d) => ({
-        sold: acc.sold + d.sold,
-        returned: acc.returned + d.returned,
-        activated: acc.activated + d.activated,
-        bundle: acc.bundle + d.bundle,
-        netRevenue: acc.netRevenue + d.netRevenue
-      }),
-      { sold: 0, returned: 0, activated: 0, bundle: 0, netRevenue: 0 }
-    );
-  });
+  const totals = $derived(calculateDayTotals(tableData.days));
 </script>
 
 <div class="glass-card overflow-hidden">
@@ -166,9 +69,9 @@
       </h3>
       <p class="text-sm text-purple-300">
         {idLabel}: {id}
-        {#if tableData().launchDate}
+        {#if tableData.launchDate}
           <span class="mx-2">|</span>
-          Launch: {tableData().launchDate}
+          Launch: {tableData.launchDate}
         {/if}
       </p>
     </div>
@@ -181,7 +84,7 @@
                  hover:bg-white/10 hover:text-white
                  disabled:opacity-50 disabled:cursor-not-allowed"
           onclick={copyToClipboard}
-          disabled={tableData().days.length === 0}
+          disabled={tableData.days.length === 0}
           title="Copy to clipboard"
         >
           {#if copyFeedback}
@@ -198,7 +101,7 @@
                  hover:bg-white/10 hover:text-white
                  disabled:opacity-50 disabled:cursor-not-allowed"
           onclick={downloadCsv}
-          disabled={tableData().days.length === 0}
+          disabled={tableData.days.length === 0}
           title="Download CSV file"
         >
           <span>&#128190;</span>
@@ -208,7 +111,7 @@
     </div>
   </div>
 
-  {#if tableData().days.length === 0}
+  {#if tableData.days.length === 0}
     <div class="p-8 text-center text-purple-300">
       <p>No data available for this product within the selected day range.</p>
     </div>
@@ -228,7 +131,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each tableData().days as day (day.day)}
+          {#each tableData.days as day (day.day)}
             <tr>
               <td class="font-mono font-semibold text-purple-300">Day {day.day}</td>
               <td class="font-mono text-sm">{day.date}</td>
@@ -242,12 +145,12 @@
         </tbody>
         <tfoot>
           <tr class="border-t-2 border-white/20 bg-white/5">
-            <td colspan="2" class="font-bold text-purple-200">Total ({tableData().days.length} days)</td>
-            <td class="font-mono font-bold text-green-400">{totals().sold.toLocaleString()}</td>
-            <td class="font-mono font-bold text-red-400">{totals().returned.toLocaleString()}</td>
-            <td class="font-mono font-bold text-blue-400">{totals().activated.toLocaleString()}</td>
-            <td class="font-mono font-bold text-orange-400">{totals().bundle.toLocaleString()}</td>
-            <td class="font-mono font-bold text-green-400">{formatCurrency(totals().netRevenue)}</td>
+            <td colspan="2" class="font-bold text-purple-200">Total ({tableData.days.length} days)</td>
+            <td class="font-mono font-bold text-green-400">{totals.sold.toLocaleString()}</td>
+            <td class="font-mono font-bold text-red-400">{totals.returned.toLocaleString()}</td>
+            <td class="font-mono font-bold text-blue-400">{totals.activated.toLocaleString()}</td>
+            <td class="font-mono font-bold text-orange-400">{totals.bundle.toLocaleString()}</td>
+            <td class="font-mono font-bold text-green-400">{formatCurrency(totals.netRevenue)}</td>
           </tr>
         </tfoot>
       </table>

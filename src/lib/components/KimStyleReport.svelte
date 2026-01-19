@@ -1,84 +1,174 @@
 <script lang="ts">
   import { salesStore } from '$lib/stores/sales';
   import ProductLaunchTable from './ProductLaunchTable.svelte';
+  import UnicornLoader from './UnicornLoader.svelte';
   import type { SalesRecord } from '$lib/services/types';
+  import { computeProductGroups, shouldUseWorker, type ProductGroup } from '$lib/workers';
 
   let maxDays = $state(2);
   let copyFeedback = $state(false);
   let groupBy = $state<'appId' | 'packageId'>('appId');
+  
+  // Loading state for async computations
+  let isComputing = $state(false);
+  let computeProgress = $state({ processed: 0, total: 0 });
+  let computedAppGroups = $state<ProductGroup[]>([]);
+  let computedPackageGroups = $state<ProductGroup[]>([]);
+  let lastComputedDataLength = $state(0);
+  let lastComputedGroupBy = $state<'appId' | 'packageId' | null>(null);
+  let useWorker = $state(false);
+  
+  // Virtual/lazy loading state
+  const INITIAL_VISIBLE = 10;
+  const LOAD_MORE_COUNT = 10;
+  let visibleCount = $state(INITIAL_VISIBLE);
+  let loadMoreRef = $state<HTMLDivElement | null>(null);
+  let observer: IntersectionObserver | null = null;
 
-  // Generic group type for both appId and packageId grouping
-  interface ProductGroup {
-    id: number;
-    name: string;
-    records: SalesRecord[];
-    hasRevenue: boolean;
+  // Chunk size for processing - yields to UI every N records (for main thread fallback)
+  const CHUNK_SIZE = 50000;
+
+  // Async function to compute groups with UI yields (main thread fallback)
+  async function computeGroupsMainThread(
+    records: SalesRecord[],
+    mode: 'appId' | 'packageId'
+  ): Promise<ProductGroup[]> {
+    const groups = new Map<number, ProductGroup>();
+    const total = records.length;
+    
+    for (let i = 0; i < total; i += CHUNK_SIZE) {
+      const chunk = records.slice(i, Math.min(i + CHUNK_SIZE, total));
+      
+      for (const record of chunk) {
+        const id = mode === 'appId' ? record.appId : record.packageid;
+        if (id == null) continue;
+        
+        if (!groups.has(id)) {
+          const name = mode === 'appId' 
+            ? (record.appName || `App ${id}`)
+            : (record.packageName || `Package ${id}`);
+          groups.set(id, {
+            id,
+            name,
+            records: [],
+            hasRevenue: false
+          });
+        }
+        
+        const group = groups.get(id)!;
+        group.records.push(record);
+        
+        if (record.netSalesUsd && record.netSalesUsd > 0) {
+          group.hasRevenue = true;
+        }
+      }
+      
+      // Update progress and yield to UI
+      computeProgress = { processed: Math.min(i + CHUNK_SIZE, total), total };
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    
+    return Array.from(groups.values())
+      .filter(g => g.hasRevenue && g.id != null)
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  // Group records by appId
-  const appGroups = $derived(() => {
-    const groups = new Map<number, ProductGroup>();
+  // Compute groups using worker or main thread based on data size
+  async function computeGroupsAsync(
+    records: SalesRecord[],
+    mode: 'appId' | 'packageId'
+  ): Promise<ProductGroup[]> {
+    useWorker = shouldUseWorker(records.length);
     
-    for (const record of $salesStore) {
-      const appId = record.appId;
-      if (appId == null) continue; // Skip records without appId
-      
-      if (!groups.has(appId)) {
-        groups.set(appId, {
-          id: appId,
-          name: record.appName || `App ${appId}`,
-          records: [],
-          hasRevenue: false
-        });
-      }
-      
-      const group = groups.get(appId)!;
-      group.records.push(record);
-      
-      if (record.netSalesUsd && record.netSalesUsd > 0) {
-        group.hasRevenue = true;
+    if (useWorker) {
+      // Use Web Worker for large datasets
+      computeProgress = { processed: 0, total: records.length };
+      try {
+        const result = await computeProductGroups(records, mode);
+        computeProgress = { processed: records.length, total: records.length };
+        return result;
+      } catch (error) {
+        console.warn('Worker failed, falling back to main thread:', error);
+        // Fall through to main thread computation
       }
     }
     
-    return Array.from(groups.values())
-      .filter(g => g.hasRevenue && g.id != null)
-      .sort((a, b) => a.name.localeCompare(b.name));
-  });
+    // Main thread computation with progress updates
+    return computeGroupsMainThread(records, mode);
+  }
 
-  // Group records by packageId
-  const packageGroups = $derived(() => {
-    const groups = new Map<number, ProductGroup>();
+  // Trigger recomputation when data or groupBy changes
+  $effect(() => {
+    const records = $salesStore;
+    const currentGroupBy = groupBy;
     
-    for (const record of $salesStore) {
-      const pkgId = record.packageid;
-      if (pkgId == null) continue; // Skip records without packageId
-      
-      if (!groups.has(pkgId)) {
-        groups.set(pkgId, {
-          id: pkgId,
-          name: record.packageName || `Package ${pkgId}`,
-          records: [],
-          hasRevenue: false
-        });
-      }
-      
-      const group = groups.get(pkgId)!;
-      group.records.push(record);
-      
-      if (record.netSalesUsd && record.netSalesUsd > 0) {
-        group.hasRevenue = true;
-      }
+    // Check if we need to recompute
+    if (records.length === lastComputedDataLength && currentGroupBy === lastComputedGroupBy) {
+      return;
     }
     
-    return Array.from(groups.values())
-      .filter(g => g.hasRevenue && g.id != null)
-      .sort((a, b) => a.name.localeCompare(b.name));
+    // Skip if no data
+    if (records.length === 0) {
+      computedAppGroups = [];
+      computedPackageGroups = [];
+      lastComputedDataLength = 0;
+      lastComputedGroupBy = currentGroupBy;
+      return;
+    }
+    
+    // Start async computation
+    isComputing = true;
+    computeProgress = { processed: 0, total: records.length };
+    
+    computeGroupsAsync(records, currentGroupBy).then(groups => {
+      if (currentGroupBy === 'appId') {
+        computedAppGroups = groups;
+      } else {
+        computedPackageGroups = groups;
+      }
+      lastComputedDataLength = records.length;
+      lastComputedGroupBy = currentGroupBy;
+      isComputing = false;
+    });
   });
 
   // Current active groups based on toggle
-  const productGroups = $derived(() => {
-    return groupBy === 'appId' ? appGroups() : packageGroups();
+  const productGroups = $derived(groupBy === 'appId' ? computedAppGroups : computedPackageGroups);
+  
+  // Visible subset of product groups (lazy loading)
+  const visibleProducts = $derived(productGroups.slice(0, visibleCount));
+  
+  const hasMoreProducts = $derived(visibleCount < productGroups.length);
+  
+  // Reset visible count when groups change
+  $effect(() => {
+    // When productGroups changes, reset visible count
+    const _ = productGroups;
+    visibleCount = INITIAL_VISIBLE;
   });
+  
+  // Setup intersection observer for infinite scroll
+  $effect(() => {
+    if (loadMoreRef && hasMoreProducts) {
+      observer = new IntersectionObserver(
+        (entries) => {
+          if (entries[0].isIntersecting && hasMoreProducts) {
+            visibleCount = Math.min(visibleCount + LOAD_MORE_COUNT, productGroups.length);
+          }
+        },
+        { rootMargin: '200px' }
+      );
+      observer.observe(loadMoreRef);
+      
+      return () => {
+        observer?.disconnect();
+      };
+    }
+  });
+  
+  function loadMore() {
+    visibleCount = Math.min(visibleCount + LOAD_MORE_COUNT, productGroups.length);
+  }
 
   // Calculate day-by-day data for a single product
   function calculateProductDays(records: SalesRecord[], maxDaysLimit: number) {
@@ -130,7 +220,7 @@
 
   // Generate CSV content for all products
   function generateAllCsvContent(): string {
-    const products = productGroups();
+    const products = productGroups;
     if (products.length === 0) return '';
 
     const idLabel = groupBy === 'appId' ? 'App ID' : 'Package ID';
@@ -246,7 +336,7 @@
                      hover:bg-white/10 hover:text-white
                      disabled:opacity-50 disabled:cursor-not-allowed"
               onclick={copyAllToClipboard}
-              disabled={productGroups().length === 0}
+              disabled={productGroups.length === 0}
               title="Copy all products to clipboard"
             >
               {#if copyFeedback}
@@ -263,7 +353,7 @@
                      hover:bg-white/10 hover:text-white
                      disabled:opacity-50 disabled:cursor-not-allowed"
               onclick={downloadAllCsv}
-              disabled={productGroups().length === 0}
+              disabled={productGroups.length === 0}
               title="Download all products as CSV"
             >
               <span>&#128190;</span>
@@ -283,7 +373,28 @@
         Refresh your sales data to see the Kim Style report.
       </p>
     </div>
-  {:else if productGroups().length === 0}
+  {:else if isComputing}
+    <div class="glass-card p-12 text-center">
+      <UnicornLoader 
+        message={useWorker 
+          ? "Processing in background..." 
+          : `Processing ${computeProgress.processed.toLocaleString()} of ${computeProgress.total.toLocaleString()} records...`} 
+        size="medium" 
+      />
+      {#if !useWorker}
+        <div class="mt-4 w-full max-w-md mx-auto">
+          <div class="h-2 bg-white/10 rounded-full overflow-hidden">
+            <div 
+              class="h-full bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 transition-all duration-300"
+              style="width: {computeProgress.total > 0 ? (computeProgress.processed / computeProgress.total * 100) : 0}%"
+            ></div>
+          </div>
+        </div>
+      {:else}
+        <p class="mt-4 text-purple-300 text-sm">Using background worker for better performance</p>
+      {/if}
+    </div>
+  {:else if productGroups.length === 0}
     <div class="glass-card p-12 text-center">
       <div class="text-6xl mb-4">&#128269;</div>
       <h3 class="text-xl font-bold text-purple-200 mb-2">No Products Found</h3>
@@ -292,12 +403,22 @@
       </p>
     </div>
   {:else}
-    <div class="text-purple-300 text-sm">
-      Showing {productGroups().length} {groupBy === 'appId' ? 'app' : 'package'}{productGroups().length === 1 ? '' : 's'} with revenue data
+    <div class="text-purple-300 text-sm flex items-center justify-between">
+      <span>
+        Showing {visibleProducts.length} of {productGroups.length} {groupBy === 'appId' ? 'app' : 'package'}{productGroups.length === 1 ? '' : 's'} with revenue data
+      </span>
+      {#if hasMoreProducts}
+        <button
+          class="text-purple-400 hover:text-purple-200 text-sm underline"
+          onclick={loadMore}
+        >
+          Load more ({productGroups.length - visibleCount} remaining)
+        </button>
+      {/if}
     </div>
     
-    <!-- Product Tables -->
-    {#each productGroups() as product (product.id)}
+    <!-- Product Tables (lazy loaded) -->
+    {#each visibleProducts as product (product.id)}
       <ProductLaunchTable 
         id={product.id}
         name={product.name}
@@ -306,5 +427,15 @@
         {maxDays}
       />
     {/each}
+    
+    <!-- Infinite scroll trigger -->
+    {#if hasMoreProducts}
+      <div 
+        bind:this={loadMoreRef}
+        class="glass-card p-8 text-center"
+      >
+        <UnicornLoader message="Loading more products..." size="small" />
+      </div>
+    {/if}
   {/if}
 </div>

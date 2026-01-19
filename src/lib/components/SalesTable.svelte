@@ -1,78 +1,23 @@
 <script lang="ts">
   import { salesStore, filterStore } from '$lib/stores/sales';
   import type { SalesRecord } from '$lib/services/types';
+  import { formatCurrency, formatNumber } from '$lib/utils/formatters';
+  import { getCountryName } from '$lib/utils/countries';
+  import Modal from './ui/Modal.svelte';
 
   type SortField = 'date' | 'appName' | 'countryCode' | 'grossUnitsSold' | 'netSalesUsd';
   type SortDirection = 'asc' | 'desc';
-
-  const countryNames: Record<string, string> = {
-    AD: 'Andorra', AE: 'United Arab Emirates', AF: 'Afghanistan', AG: 'Antigua and Barbuda',
-    AI: 'Anguilla', AL: 'Albania', AM: 'Armenia', AO: 'Angola', AQ: 'Antarctica',
-    AR: 'Argentina', AS: 'American Samoa', AT: 'Austria', AU: 'Australia', AW: 'Aruba',
-    AX: 'Aland Islands', AZ: 'Azerbaijan', BA: 'Bosnia and Herzegovina', BB: 'Barbados',
-    BD: 'Bangladesh', BE: 'Belgium', BF: 'Burkina Faso', BG: 'Bulgaria', BH: 'Bahrain',
-    BI: 'Burundi', BJ: 'Benin', BL: 'Saint Barthelemy', BM: 'Bermuda', BN: 'Brunei',
-    BO: 'Bolivia', BQ: 'Caribbean Netherlands', BR: 'Brazil', BS: 'Bahamas', BT: 'Bhutan',
-    BV: 'Bouvet Island', BW: 'Botswana', BY: 'Belarus', BZ: 'Belize', CA: 'Canada',
-    CC: 'Cocos Islands', CD: 'DR Congo', CF: 'Central African Republic', CG: 'Congo',
-    CH: 'Switzerland', CI: 'Ivory Coast', CK: 'Cook Islands', CL: 'Chile', CM: 'Cameroon',
-    CN: 'China', CO: 'Colombia', CR: 'Costa Rica', CU: 'Cuba', CV: 'Cape Verde',
-    CW: 'Curacao', CX: 'Christmas Island', CY: 'Cyprus', CZ: 'Czechia', DE: 'Germany',
-    DJ: 'Djibouti', DK: 'Denmark', DM: 'Dominica', DO: 'Dominican Republic', DZ: 'Algeria',
-    EC: 'Ecuador', EE: 'Estonia', EG: 'Egypt', EH: 'Western Sahara', ER: 'Eritrea',
-    ES: 'Spain', ET: 'Ethiopia', FI: 'Finland', FJ: 'Fiji', FK: 'Falkland Islands',
-    FM: 'Micronesia', FO: 'Faroe Islands', FR: 'France', GA: 'Gabon', GB: 'United Kingdom',
-    GD: 'Grenada', GE: 'Georgia', GF: 'French Guiana', GG: 'Guernsey', GH: 'Ghana',
-    GI: 'Gibraltar', GL: 'Greenland', GM: 'Gambia', GN: 'Guinea', GP: 'Guadeloupe',
-    GQ: 'Equatorial Guinea', GR: 'Greece', GS: 'South Georgia', GT: 'Guatemala', GU: 'Guam',
-    GW: 'Guinea-Bissau', GY: 'Guyana', HK: 'Hong Kong', HM: 'Heard Island', HN: 'Honduras',
-    HR: 'Croatia', HT: 'Haiti', HU: 'Hungary', ID: 'Indonesia', IE: 'Ireland',
-    IL: 'Israel', IM: 'Isle of Man', IN: 'India', IO: 'British Indian Ocean Territory',
-    IQ: 'Iraq', IR: 'Iran', IS: 'Iceland', IT: 'Italy', JE: 'Jersey', JM: 'Jamaica',
-    JO: 'Jordan', JP: 'Japan', KE: 'Kenya', KG: 'Kyrgyzstan', KH: 'Cambodia',
-    KI: 'Kiribati', KM: 'Comoros', KN: 'Saint Kitts and Nevis', KP: 'North Korea',
-    KR: 'South Korea', KW: 'Kuwait', KY: 'Cayman Islands', KZ: 'Kazakhstan', LA: 'Laos',
-    LB: 'Lebanon', LC: 'Saint Lucia', LI: 'Liechtenstein', LK: 'Sri Lanka', LR: 'Liberia',
-    LS: 'Lesotho', LT: 'Lithuania', LU: 'Luxembourg', LV: 'Latvia', LY: 'Libya',
-    MA: 'Morocco', MC: 'Monaco', MD: 'Moldova', ME: 'Montenegro', MF: 'Saint Martin',
-    MG: 'Madagascar', MH: 'Marshall Islands', MK: 'North Macedonia', ML: 'Mali',
-    MM: 'Myanmar', MN: 'Mongolia', MO: 'Macau', MP: 'Northern Mariana Islands',
-    MQ: 'Martinique', MR: 'Mauritania', MS: 'Montserrat', MT: 'Malta', MU: 'Mauritius',
-    MV: 'Maldives', MW: 'Malawi', MX: 'Mexico', MY: 'Malaysia', MZ: 'Mozambique',
-    NA: 'Namibia', NC: 'New Caledonia', NE: 'Niger', NF: 'Norfolk Island', NG: 'Nigeria',
-    NI: 'Nicaragua', NL: 'Netherlands', NO: 'Norway', NP: 'Nepal', NR: 'Nauru',
-    NU: 'Niue', NZ: 'New Zealand', OM: 'Oman', PA: 'Panama', PE: 'Peru',
-    PF: 'French Polynesia', PG: 'Papua New Guinea', PH: 'Philippines', PK: 'Pakistan',
-    PL: 'Poland', PM: 'Saint Pierre and Miquelon', PN: 'Pitcairn Islands', PR: 'Puerto Rico',
-    PS: 'Palestine', PT: 'Portugal', PW: 'Palau', PY: 'Paraguay', QA: 'Qatar',
-    RE: 'Reunion', RO: 'Romania', RS: 'Serbia', RU: 'Russia', RW: 'Rwanda',
-    SA: 'Saudi Arabia', SB: 'Solomon Islands', SC: 'Seychelles', SD: 'Sudan',
-    SE: 'Sweden', SG: 'Singapore', SH: 'Saint Helena', SI: 'Slovenia', SJ: 'Svalbard',
-    SK: 'Slovakia', SL: 'Sierra Leone', SM: 'San Marino', SN: 'Senegal', SO: 'Somalia',
-    SR: 'Suriname', SS: 'South Sudan', ST: 'Sao Tome and Principe', SV: 'El Salvador',
-    SX: 'Sint Maarten', SY: 'Syria', SZ: 'Eswatini', TC: 'Turks and Caicos',
-    TD: 'Chad', TF: 'French Southern Territories', TG: 'Togo', TH: 'Thailand',
-    TJ: 'Tajikistan', TK: 'Tokelau', TL: 'Timor-Leste', TM: 'Turkmenistan', TN: 'Tunisia',
-    TO: 'Tonga', TR: 'Turkey', TT: 'Trinidad and Tobago', TV: 'Tuvalu', TW: 'Taiwan',
-    TZ: 'Tanzania', UA: 'Ukraine', UG: 'Uganda', UM: 'US Minor Outlying Islands',
-    US: 'United States', UY: 'Uruguay', UZ: 'Uzbekistan', VA: 'Vatican City',
-    VC: 'Saint Vincent and the Grenadines', VE: 'Venezuela', VG: 'British Virgin Islands',
-    VI: 'US Virgin Islands', VN: 'Vietnam', VU: 'Vanuatu', WF: 'Wallis and Futuna',
-    WS: 'Samoa', XK: 'Kosovo', YE: 'Yemen', YT: 'Mayotte', ZA: 'South Africa',
-    ZM: 'Zambia', ZW: 'Zimbabwe'
-  };
-
-  function getCountryName(code: string): string {
-    return countryNames[code] || code;
-  }
 
   let sortField = $state<SortField>('date');
   let sortDirection = $state<SortDirection>('desc');
   let currentPage = $state(1);
   const pageSize = 25;
+  
+  // Raw record modal state
+  let selectedRecord = $state<SalesRecord | null>(null);
 
   // Apply filters and sorting
-  const filteredData = $derived(() => {
+  const filteredData = $derived.by(() => {
     let data = [...$salesStore];
     const filters = $filterStore;
 
@@ -83,11 +28,14 @@
     if (filters.endDate) {
       data = data.filter(r => r.date <= filters.endDate!);
     }
-    if (filters.appId != null) {
-      data = data.filter(r => r.appId === filters.appId);
+    if (filters.appIds && filters.appIds.length > 0) {
+      data = data.filter(r => filters.appIds!.includes(r.appId));
     }
     if (filters.countryCode) {
       data = data.filter(r => r.countryCode === filters.countryCode);
+    }
+    if (filters.apiKeyIds && filters.apiKeyIds.length > 0) {
+      data = data.filter(r => filters.apiKeyIds!.includes(r.apiKeyId));
     }
 
     // Apply sorting
@@ -135,10 +83,10 @@
   });
 
   // Pagination
-  const totalPages = $derived(Math.ceil(filteredData().length / pageSize));
-  const paginatedData = $derived(() => {
+  const totalPages = $derived(Math.ceil(filteredData.length / pageSize));
+  const paginatedData = $derived.by(() => {
     const start = (currentPage - 1) * pageSize;
-    return filteredData().slice(start, start + pageSize);
+    return filteredData.slice(start, start + pageSize);
   });
 
   function toggleSort(field: SortField) {
@@ -156,16 +104,17 @@
     return sortDirection === 'asc' ? '&#9650;' : '&#9660;'; // Up or down arrow
   }
 
-  function formatCurrency(value: number | undefined): string {
-    if (value === undefined || value === null) return '-';
-    return '$' + value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  function showRawRecord(record: SalesRecord) {
+    selectedRecord = record;
   }
 
-  function formatNumber(value: number | undefined): string {
-    if (value === undefined || value === null || value === 0) return '-';
-    return value.toLocaleString();
+  function closeRawModal() {
+    selectedRecord = null;
   }
 
+  function formatJson(obj: object): string {
+    return JSON.stringify(obj, null, 2);
+  }
 </script>
 
 <div class="glass-card overflow-hidden">
@@ -176,7 +125,7 @@
       Sales Records
     </h3>
     <span class="text-purple-300 text-sm">
-      {filteredData().length.toLocaleString()} records
+      {filteredData.length.toLocaleString()} records
     </span>
   </div>
 
@@ -191,6 +140,7 @@
       <table class="magic-table">
         <thead>
           <tr>
+            <th class="w-8"></th>
             <th>
               <button 
                 class="flex items-center gap-1 hover:text-purple-300 transition-colors"
@@ -241,8 +191,18 @@
           </tr>
         </thead>
         <tbody>
-          {#each paginatedData() as record}
+          {#each paginatedData as record}
             <tr>
+              <td class="text-center">
+                <button
+                  type="button"
+                  class="w-6 h-6 rounded bg-purple-500/30 hover:bg-purple-500/50 text-purple-200 hover:text-white text-xs transition-colors"
+                  onclick={() => showRawRecord(record)}
+                  title="View raw record"
+                >
+                  &#123;&#125;
+                </button>
+              </td>
               <td class="font-mono text-sm">{record.date}</td>
               <td>
                 <div class="flex flex-col">
@@ -321,3 +281,31 @@
     {/if}
   {/if}
 </div>
+
+<!-- Raw Record Modal -->
+<Modal
+  open={selectedRecord !== null}
+  title="Raw Record Data"
+  subtitle={selectedRecord ? `${selectedRecord.date} | ${selectedRecord.appName || `App ${selectedRecord.appId}`} | ${selectedRecord.countryCode}` : ''}
+  icon="&#128203;"
+  maxWidth="3xl"
+  onclose={closeRawModal}
+>
+  {#if selectedRecord}
+    <div class="bg-purple-900/50 rounded-lg p-4">
+      <pre class="text-sm text-purple-100 font-mono whitespace-pre-wrap break-words">{formatJson(selectedRecord)}</pre>
+    </div>
+  {/if}
+  
+  {#snippet footer()}
+    <div class="flex justify-end">
+      <button
+        type="button"
+        class="btn-primary"
+        onclick={closeRawModal}
+      >
+        Close
+      </button>
+    </div>
+  {/snippet}
+</Modal>

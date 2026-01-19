@@ -18,5 +18,5 @@
       "$lib/*": ["src/lib/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte", "electron/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.svelte"]
 }

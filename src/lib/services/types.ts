@@ -1,11 +1,22 @@
 // Shared types for the Steam Sales Analyzer
 
+// API Key management
+export interface ApiKeyInfo {
+  id: string;           // UUID
+  displayName?: string; // Optional user-friendly name
+  keyHash: string;      // Last 4 chars for display identification
+  createdAt: number;    // Timestamp
+}
+
 export interface SalesRecord {
   id?: number;
   
+  // API Key association
+  apiKeyId: string;     // Which API key this data came from
+  
   // Core identifiers (from results array)
   date: string;
-  lineItemType: string; // "Package", "MicroTxn", etc.
+  lineItemType?: string; // "Package", "MicroTxn", etc. (optional for legacy DB records)
   partnerid?: number;
   primaryAppid?: number;
   packageid?: number;
@@ -67,19 +78,34 @@ export interface SyncMeta {
 }
 
 export interface FetchProgress {
-  phase: 'init' | 'dates' | 'sales' | 'saving' | 'complete' | 'error' | 'cancelled';
+  phase: 'init' | 'dates' | 'fetch' | 'sales' | 'saving' | 'complete' | 'error' | 'cancelled';
   message: string;
   current: number;
   total: number;
   currentDate?: string;
   recordsFetched?: number;
   error?: string;
+  // Multi-key sync progress
+  currentKeyId?: string;
+  currentKeyName?: string;
+  currentKeyIndex?: number;
+  totalKeys?: number;
+  // Re-processing info
+  datesToReprocess?: number;
+  // Per-key breakdown for segmented progress bar
+  keySegments?: {
+    keyId: string;
+    keyName: string;
+    newDates: number;
+    reprocessDates: number;
+  }[];
 }
 
 export type ProgressCallback = (progress: FetchProgress) => void;
 
 export interface FetchParams {
   apiKey: string;
+  apiKeyId: string;     // ID of the API key for association
   startDate?: string;
   endDate?: string;
   onProgress?: ProgressCallback;
@@ -89,8 +115,9 @@ export interface FetchParams {
 export interface Filters {
   startDate?: string;
   endDate?: string;
-  appId?: number;
+  appIds?: number[];       // Multi-select product filter
   countryCode?: string;
+  apiKeyIds?: string[];    // Multi-select API key source filter
 }
 
 // Result from fetchSalesData - includes highwatermark for deferred saving
@@ -100,15 +127,36 @@ export interface FetchResult {
   recordCount?: number; // Total records saved (when using incremental save)
 }
 
+// Result from getChangedDates - for pre-counting dates across all keys
+export interface ChangedDatesResult {
+  dates: string[];
+  newHighwatermark: number;
+}
+
 export interface SalesService {
-  getApiKey(): Promise<string | null>;
-  setApiKey(key: string): Promise<void>;
+  // Multi-key API key management
+  getAllApiKeys(): Promise<ApiKeyInfo[]>;
+  getApiKey(id: string): Promise<string | null>;
+  addApiKey(key: string, displayName?: string): Promise<ApiKeyInfo>;
+  updateApiKeyName(id: string, displayName: string): Promise<void>;
+  deleteApiKey(id: string): Promise<void>;
+  
+  // Data operations
+  getChangedDates(apiKey: string, apiKeyId: string): Promise<ChangedDatesResult>;
   fetchSalesData(params: FetchParams): Promise<FetchResult>;
   getSalesFromDb(filters: Filters): Promise<SalesRecord[]>;
-  saveSalesData(data: SalesRecord[]): Promise<void>;
-  getHighwatermark(): Promise<number>;
-  setHighwatermark(value: number): Promise<void>;
+  saveSalesData(data: SalesRecord[], apiKeyId: string): Promise<void>;
+  
+  // Per-key highwatermark
+  getHighwatermark(apiKeyId: string): Promise<number>;
+  setHighwatermark(apiKeyId: string, value: number): Promise<void>;
+  
+  // Data management
   clearAllData(): Promise<void>;
+  clearDataForKey(apiKeyId: string): Promise<void>;
+  
+  // Helper to get dates already in DB for prioritization
+  getExistingDates(apiKeyId: string): Promise<Set<string>>;
 }
 
 // Steam API response types

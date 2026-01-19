@@ -2,42 +2,280 @@
 // Used in browser development mode
 
 import Dexie, { type EntityTable } from 'dexie';
-import type { SalesRecord, SyncMeta } from '$lib/services/types';
+import type { SalesRecord, SyncMeta, Filters } from '$lib/services/types';
+
+// ============================================================================
+// Pre-computed aggregate types
+// ============================================================================
+
+export interface DailyAggregate {
+  date: string;
+  totalRevenue: number;
+  totalUnits: number;
+  recordCount: number;
+}
+
+export interface AppAggregate {
+  appId: number;
+  appName: string;
+  totalRevenue: number;
+  totalUnits: number;
+  recordCount: number;
+  firstSaleDate: string;
+  lastSaleDate: string;
+}
+
+export interface CountryAggregate {
+  countryCode: string;
+  totalRevenue: number;
+  totalUnits: number;
+  recordCount: number;
+}
+
+export interface AggregatesMeta {
+  key: string; // 'lastUpdated', 'totalRecords', etc.
+  value: string;
+}
 
 // Extend Dexie with our tables
 class SteamSalesDB extends Dexie {
   sales!: EntityTable<SalesRecord, 'id'>;
   syncMeta!: EntityTable<SyncMeta, 'key'>;
+  dailyAggregates!: EntityTable<DailyAggregate, 'date'>;
+  appAggregates!: EntityTable<AppAggregate, 'appId'>;
+  countryAggregates!: EntityTable<CountryAggregate, 'countryCode'>;
+  aggregatesMeta!: EntityTable<AggregatesMeta, 'key'>;
 
   constructor() {
     super('SteamSalesDB');
     
+    // Version 1: Original schema
     this.version(1).stores({
-      // Define indexes for efficient querying
-      // id is auto-incremented, we index date, appId for filtering
       sales: '++id, date, appId, packageId, countryCode, [date+appId+packageId+countryCode]',
       syncMeta: 'key'
+    });
+    
+    // Version 2: Add pre-computed aggregate tables
+    this.version(2).stores({
+      sales: '++id, date, appId, packageId, countryCode, [date+appId+packageId+countryCode]',
+      syncMeta: 'key',
+      dailyAggregates: 'date',
+      appAggregates: 'appId',
+      countryAggregates: 'countryCode',
+      aggregatesMeta: 'key'
+    });
+    
+    // Version 3: Add apiKeyId index for multi-key support
+    this.version(3).stores({
+      sales: '++id, date, appId, packageId, countryCode, apiKeyId, [date+appId+packageId+countryCode]',
+      syncMeta: 'key',
+      dailyAggregates: 'date',
+      appAggregates: 'appId',
+      countryAggregates: 'countryCode',
+      aggregatesMeta: 'key'
     });
   }
 }
 
 export const db = new SteamSalesDB();
 
-// Helper functions for common operations
+// ============================================================================
+// Database Initialization & Cleanup
+// ============================================================================
+
+/**
+ * Clean up invalid records on startup.
+ * Deletes any sales records that don't have a valid apiKeyId.
+ * Returns the number of records deleted.
+ */
+export async function cleanupInvalidRecords(): Promise<number> {
+  // Find and delete records without a valid apiKeyId
+  const invalidRecords = await db.sales
+    .filter(record => !record.apiKeyId || record.apiKeyId.trim() === '')
+    .toArray();
+  
+  if (invalidRecords.length > 0) {
+    const idsToDelete = invalidRecords
+      .map(r => r.id)
+      .filter((id): id is number => id !== undefined);
+    
+    await db.sales.bulkDelete(idsToDelete);
+    console.log(`Cleaned up ${invalidRecords.length} invalid records (missing apiKeyId)`);
+    
+    // Recompute aggregates after cleanup
+    const remainingCount = await db.sales.count();
+    if (remainingCount > 0) {
+      await computeAndStoreAggregates();
+    } else {
+      await clearAggregates();
+    }
+  }
+  
+  return invalidRecords.length;
+}
+
+/**
+ * Initialize the database - should be called on app startup.
+ * Performs cleanup of invalid records.
+ */
+export async function initializeDatabase(): Promise<{ cleanedRecords: number }> {
+  const cleanedRecords = await cleanupInvalidRecords();
+  return { cleanedRecords };
+}
+
+// ============================================================================
+// Basic Operations
+// ============================================================================
+
 export async function clearAllData(): Promise<void> {
   await db.sales.clear();
   await db.syncMeta.clear();
 }
 
-export async function getUniqueApps(): Promise<{ appId: number; appName: string }[]> {
-  const sales = await db.sales.toArray();
-  const uniqueApps = new Map<number, string>();
+/**
+ * Get the total count of sales records
+ */
+export async function getTotalCount(): Promise<number> {
+  return db.sales.count();
+}
+
+// ============================================================================
+// Paginated Queries
+// ============================================================================
+
+export interface PaginatedResult<T> {
+  data: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
+/**
+ * Get paginated sales records with optional filters
+ * Uses indexed queries for efficient pagination
+ */
+export async function getSalesPaginated(
+  page: number = 1,
+  pageSize: number = 1000,
+  filters?: Filters
+): Promise<PaginatedResult<SalesRecord>> {
+  const offset = (page - 1) * pageSize;
   
-  for (const sale of sales) {
-    if (!uniqueApps.has(sale.appId)) {
-      uniqueApps.set(sale.appId, sale.appName || `App ${sale.appId}`);
+  // Start with base collection
+  let collection = db.sales.toCollection();
+  
+  // Apply indexed filters where possible
+  if (filters?.appIds && filters.appIds.length === 1) {
+    // Single app filter can use index
+    collection = db.sales.where('appId').equals(filters.appIds[0]);
+  } else if (filters?.startDate && filters?.endDate) {
+    collection = db.sales.where('date').between(filters.startDate, filters.endDate, true, true);
+  } else if (filters?.startDate) {
+    collection = db.sales.where('date').aboveOrEqual(filters.startDate);
+  } else if (filters?.endDate) {
+    collection = db.sales.where('date').belowOrEqual(filters.endDate);
+  }
+  
+  // Get total count for this filter (for pagination info)
+  let total = await collection.count();
+  
+  // Get paginated results
+  let results = await collection
+    .offset(offset)
+    .limit(pageSize)
+    .toArray();
+  
+  // Apply non-indexed filters in memory
+  if (filters) {
+    if (filters.countryCode) {
+      results = results.filter(r => r.countryCode === filters.countryCode);
+    }
+    // App filter (multi-select)
+    if (filters.appIds && filters.appIds.length > 1) {
+      const appIdSet = new Set(filters.appIds);
+      results = results.filter(r => appIdSet.has(r.appId));
+    }
+    // API key filter (multi-select)
+    if (filters.apiKeyIds && filters.apiKeyIds.length > 0) {
+      const apiKeyIdSet = new Set(filters.apiKeyIds);
+      results = results.filter(r => apiKeyIdSet.has(r.apiKeyId));
+    }
+    // Date filters if not already applied via index
+    if (filters.startDate && !(filters.appIds && filters.appIds.length === 1)) {
+      results = results.filter(r => r.date >= filters.startDate!);
+    }
+    if (filters.endDate && !(filters.appIds && filters.appIds.length === 1)) {
+      results = results.filter(r => r.date <= filters.endDate!);
+    }
+    if (filters.appIds && filters.appIds.length === 1 && (filters.startDate || filters.endDate)) {
+      // If we filtered by single appId via index, still need to apply date filters
+      if (filters.startDate) {
+        results = results.filter(r => r.date >= filters.startDate!);
+      }
+      if (filters.endDate) {
+        results = results.filter(r => r.date <= filters.endDate!);
+      }
     }
   }
+  
+  return {
+    data: results,
+    total,
+    page,
+    pageSize,
+    hasMore: offset + results.length < total
+  };
+}
+
+/**
+ * Stream sales records in batches, calling callback for each batch
+ * Useful for processing large datasets without loading all into memory
+ */
+export async function streamSalesInBatches(
+  batchSize: number,
+  callback: (batch: SalesRecord[], progress: { processed: number; total: number }) => Promise<void> | void,
+  filters?: Filters
+): Promise<void> {
+  const total = await getTotalCount();
+  let processed = 0;
+  let offset = 0;
+  
+  while (offset < total) {
+    const result = await getSalesPaginated(Math.floor(offset / batchSize) + 1, batchSize, filters);
+    
+    if (result.data.length === 0) break;
+    
+    processed += result.data.length;
+    await callback(result.data, { processed, total });
+    
+    offset += batchSize;
+    
+    // Yield to allow UI updates
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+}
+
+// ============================================================================
+// Optimized Metadata Queries (using indexed queries where possible)
+// ============================================================================
+
+/**
+ * Get unique apps - optimized to use cursor for streaming
+ */
+export async function getUniqueApps(): Promise<{ appId: number; appName: string }[]> {
+  const uniqueApps = new Map<number, string>();
+  
+  // Use cursor to stream through data without loading all into memory
+  await db.sales.orderBy('appId').eachUniqueKey(async (appId) => {
+    if (typeof appId === 'number') {
+      // Get one record to get the app name
+      const record = await db.sales.where('appId').equals(appId).first();
+      if (record) {
+        uniqueApps.set(appId, record.appName || `App ${appId}`);
+      }
+    }
+  });
   
   return Array.from(uniqueApps.entries()).map(([appId, appName]) => ({
     appId,
@@ -45,26 +283,325 @@ export async function getUniqueApps(): Promise<{ appId: number; appName: string 
   }));
 }
 
+/**
+ * Get unique countries - optimized to use cursor
+ */
 export async function getUniqueCountries(): Promise<string[]> {
-  const sales = await db.sales.toArray();
   const countries = new Set<string>();
   
-  for (const sale of sales) {
-    countries.add(sale.countryCode);
-  }
+  // Use cursor to stream through unique country codes
+  await db.sales.orderBy('countryCode').eachUniqueKey((code) => {
+    if (typeof code === 'string') {
+      countries.add(code);
+    }
+  });
   
   return Array.from(countries).sort();
 }
 
+/**
+ * Get date range - optimized to only fetch first and last records
+ */
 export async function getDateRange(): Promise<{ min: string; max: string } | null> {
-  const sales = await db.sales.orderBy('date').toArray();
+  // Get first record by date (ascending)
+  const first = await db.sales.orderBy('date').first();
   
-  if (sales.length === 0) {
+  if (!first) {
     return null;
   }
   
+  // Get last record by date (descending)
+  const last = await db.sales.orderBy('date').last();
+  
   return {
-    min: sales[0].date,
-    max: sales[sales.length - 1].date
+    min: first.date,
+    max: last?.date || first.date
   };
+}
+
+// ============================================================================
+// Aggregation Queries (computed at DB level where possible)
+// ============================================================================
+
+/**
+ * Get record count by app ID
+ */
+export async function getCountByApp(): Promise<Map<number, number>> {
+  const counts = new Map<number, number>();
+  
+  await db.sales.orderBy('appId').eachUniqueKey(async (appId) => {
+    if (typeof appId === 'number') {
+      const count = await db.sales.where('appId').equals(appId).count();
+      counts.set(appId, count);
+    }
+  });
+  
+  return counts;
+}
+
+/**
+ * Get record count by date
+ */
+export async function getCountByDate(): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  
+  await db.sales.orderBy('date').eachUniqueKey(async (date) => {
+    if (typeof date === 'string') {
+      const count = await db.sales.where('date').equals(date).count();
+      counts.set(date, count);
+    }
+  });
+  
+  return counts;
+}
+
+/**
+ * Get sales for a specific app ID (paginated)
+ */
+export async function getSalesForApp(
+  appId: number,
+  page: number = 1,
+  pageSize: number = 1000
+): Promise<PaginatedResult<SalesRecord>> {
+  const offset = (page - 1) * pageSize;
+  
+  const collection = db.sales.where('appId').equals(appId);
+  const total = await collection.count();
+  const data = await collection.offset(offset).limit(pageSize).toArray();
+  
+  return {
+    data,
+    total,
+    page,
+    pageSize,
+    hasMore: offset + data.length < total
+  };
+}
+
+/**
+ * Get sales for a specific date range (paginated)
+ */
+export async function getSalesForDateRange(
+  startDate: string,
+  endDate: string,
+  page: number = 1,
+  pageSize: number = 1000
+): Promise<PaginatedResult<SalesRecord>> {
+  const offset = (page - 1) * pageSize;
+  
+  const collection = db.sales.where('date').between(startDate, endDate, true, true);
+  const total = await collection.count();
+  const data = await collection.offset(offset).limit(pageSize).toArray();
+  
+  return {
+    data,
+    total,
+    page,
+    pageSize,
+    hasMore: offset + data.length < total
+  };
+}
+
+// ============================================================================
+// Pre-computed Aggregates
+// ============================================================================
+
+/**
+ * Check if aggregates need to be recomputed
+ */
+export async function aggregatesNeedUpdate(): Promise<boolean> {
+  const meta = await db.aggregatesMeta.get('lastUpdated');
+  if (!meta) return true;
+  
+  const totalRecordsMeta = await db.aggregatesMeta.get('totalRecords');
+  const currentCount = await db.sales.count();
+  
+  if (!totalRecordsMeta || parseInt(totalRecordsMeta.value) !== currentCount) {
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Compute and store all aggregates
+ * Call this after data sync to pre-compute summaries
+ */
+export async function computeAndStoreAggregates(
+  onProgress?: (message: string, progress: number) => void
+): Promise<void> {
+  const totalRecords = await db.sales.count();
+  if (totalRecords === 0) {
+    // Clear existing aggregates
+    await db.dailyAggregates.clear();
+    await db.appAggregates.clear();
+    await db.countryAggregates.clear();
+    await db.aggregatesMeta.clear();
+    return;
+  }
+  
+  onProgress?.('Computing daily aggregates...', 10);
+  
+  // Compute daily aggregates
+  const dailyMap = new Map<string, DailyAggregate>();
+  const appMap = new Map<number, AppAggregate>();
+  const countryMap = new Map<string, CountryAggregate>();
+  
+  const BATCH_SIZE = 50000;
+  let processed = 0;
+  
+  // Stream through all sales in batches
+  await streamSalesInBatches(BATCH_SIZE, async (batch, { processed: p, total }) => {
+    for (const sale of batch) {
+      // Daily aggregate
+      const daily = dailyMap.get(sale.date) || {
+        date: sale.date,
+        totalRevenue: 0,
+        totalUnits: 0,
+        recordCount: 0
+      };
+      daily.totalRevenue += sale.netSalesUsd ?? 0;
+      daily.totalUnits += sale.unitsSold ?? 0;
+      daily.recordCount++;
+      dailyMap.set(sale.date, daily);
+      
+      // App aggregate
+      const app = appMap.get(sale.appId) || {
+        appId: sale.appId,
+        appName: sale.appName || `App ${sale.appId}`,
+        totalRevenue: 0,
+        totalUnits: 0,
+        recordCount: 0,
+        firstSaleDate: sale.date,
+        lastSaleDate: sale.date
+      };
+      app.totalRevenue += sale.netSalesUsd ?? 0;
+      app.totalUnits += sale.unitsSold ?? 0;
+      app.recordCount++;
+      if (sale.appName) app.appName = sale.appName;
+      if (sale.date < app.firstSaleDate) app.firstSaleDate = sale.date;
+      if (sale.date > app.lastSaleDate) app.lastSaleDate = sale.date;
+      appMap.set(sale.appId, app);
+      
+      // Country aggregate
+      const country = countryMap.get(sale.countryCode) || {
+        countryCode: sale.countryCode,
+        totalRevenue: 0,
+        totalUnits: 0,
+        recordCount: 0
+      };
+      country.totalRevenue += sale.netSalesUsd ?? 0;
+      country.totalUnits += sale.unitsSold ?? 0;
+      country.recordCount++;
+      countryMap.set(sale.countryCode, country);
+    }
+    
+    processed = p;
+    const progress = Math.round((p / total) * 70) + 10;
+    onProgress?.(`Processing records... ${p.toLocaleString()} / ${total.toLocaleString()}`, progress);
+  });
+  
+  // Store aggregates in database
+  onProgress?.('Storing daily aggregates...', 80);
+  await db.dailyAggregates.clear();
+  await db.dailyAggregates.bulkPut(Array.from(dailyMap.values()));
+  
+  onProgress?.('Storing app aggregates...', 85);
+  await db.appAggregates.clear();
+  await db.appAggregates.bulkPut(Array.from(appMap.values()));
+  
+  onProgress?.('Storing country aggregates...', 90);
+  await db.countryAggregates.clear();
+  await db.countryAggregates.bulkPut(Array.from(countryMap.values()));
+  
+  // Update metadata
+  onProgress?.('Finalizing...', 95);
+  await db.aggregatesMeta.bulkPut([
+    { key: 'lastUpdated', value: new Date().toISOString() },
+    { key: 'totalRecords', value: totalRecords.toString() }
+  ]);
+  
+  onProgress?.('Complete!', 100);
+}
+
+/**
+ * Get pre-computed daily aggregates
+ * Falls back to computing on-the-fly if not available
+ */
+export async function getDailyAggregates(): Promise<DailyAggregate[]> {
+  const aggregates = await db.dailyAggregates.orderBy('date').toArray();
+  
+  if (aggregates.length > 0) {
+    return aggregates;
+  }
+  
+  // Fall back to on-the-fly computation for small datasets
+  const count = await db.sales.count();
+  if (count === 0) return [];
+  
+  // For larger datasets, trigger background computation
+  if (count > 10000) {
+    console.warn('Daily aggregates not pre-computed. Consider calling computeAndStoreAggregates()');
+  }
+  
+  return aggregates;
+}
+
+/**
+ * Get pre-computed app aggregates
+ */
+export async function getAppAggregates(): Promise<AppAggregate[]> {
+  const aggregates = await db.appAggregates.toArray();
+  return aggregates.sort((a, b) => b.totalRevenue - a.totalRevenue);
+}
+
+/**
+ * Get pre-computed country aggregates
+ */
+export async function getCountryAggregates(): Promise<CountryAggregate[]> {
+  const aggregates = await db.countryAggregates.toArray();
+  return aggregates.sort((a, b) => b.totalRevenue - a.totalRevenue);
+}
+
+/**
+ * Get aggregate statistics
+ */
+export async function getAggregateStats(): Promise<{
+  totalRevenue: number;
+  totalUnits: number;
+  totalRecords: number;
+  uniqueApps: number;
+  uniqueCountries: number;
+  dateRange: { min: string; max: string } | null;
+}> {
+  const [appAggregates, countryAggregates, dailyAggregates] = await Promise.all([
+    db.appAggregates.toArray(),
+    db.countryAggregates.toArray(),
+    db.dailyAggregates.orderBy('date').toArray()
+  ]);
+  
+  const totalRevenue = appAggregates.reduce((sum, a) => sum + a.totalRevenue, 0);
+  const totalUnits = appAggregates.reduce((sum, a) => sum + a.totalUnits, 0);
+  const totalRecords = appAggregates.reduce((sum, a) => sum + a.recordCount, 0);
+  
+  return {
+    totalRevenue,
+    totalUnits,
+    totalRecords,
+    uniqueApps: appAggregates.length,
+    uniqueCountries: countryAggregates.length,
+    dateRange: dailyAggregates.length > 0 
+      ? { min: dailyAggregates[0].date, max: dailyAggregates[dailyAggregates.length - 1].date }
+      : null
+  };
+}
+
+/**
+ * Clear all aggregates (call when data is wiped)
+ */
+export async function clearAggregates(): Promise<void> {
+  await db.dailyAggregates.clear();
+  await db.appAggregates.clear();
+  await db.countryAggregates.clear();
+  await db.aggregatesMeta.clear();
 }

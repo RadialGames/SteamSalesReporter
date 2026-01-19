@@ -78,15 +78,29 @@ export default defineConfig({
       '$lib': path.resolve(__dirname, './src/lib')
     }
   },
+  // Tauri expects a fixed port, fail if that port is not available
   server: {
     port: 5173,
+    strictPort: true,
     hmr: {
       // Increase timeout to prevent premature reloads
       timeout: 5000
     },
     watch: {
       // Ignore certain files/patterns that might trigger unnecessary reloads
-      ignored: ['**/node_modules/**', '**/.git/**']
+      ignored: ['**/node_modules/**', '**/.git/**', '**/src-tauri/**']
     }
+  },
+  // Prevent vite from obscuring Rust errors
+  clearScreen: false,
+  // Env variables with TAURI_ prefix will be exposed to tauri's source code
+  envPrefix: ['VITE_', 'TAURI_'],
+  build: {
+    // Tauri uses Chromium on Windows and WebKit on macOS and Linux
+    target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari14',
+    // Don't minify for debug builds
+    minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
+    // Produce sourcemaps for debug builds
+    sourcemap: !!process.env.TAURI_ENV_DEBUG,
   }
 });

@@ -1,18 +1,6 @@
 <script lang="ts">
   import { totalStats } from '$lib/stores/sales';
-
-  function formatCurrency(value: number): string {
-    if (value >= 1000000) {
-      return '$' + (value / 1000000).toFixed(2) + 'M';
-    } else if (value >= 1000) {
-      return '$' + (value / 1000).toFixed(2) + 'K';
-    }
-    return '$' + value.toFixed(2);
-  }
-
-  function formatNumber(value: number): string {
-    return value.toLocaleString();
-  }
+  import { formatCurrency, formatNumber } from '$lib/utils/formatters';
 </script>
 
 <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
@@ -24,7 +12,7 @@
     <div class="relative">
       <p class="text-purple-300 text-sm font-medium">Total Revenue</p>
       <p class="text-2xl font-bold font-['Fredoka'] mt-1 rainbow-text">
-        {formatCurrency($totalStats.totalRevenue)}
+        {formatCurrency($totalStats.totalRevenue, { compact: true })}
       </p>
     </div>
   </div>
@@ -37,7 +25,7 @@
     <div class="relative">
       <p class="text-purple-300 text-sm font-medium">Units Sold</p>
       <p class="text-2xl font-bold font-['Fredoka'] mt-1 text-pink-400">
-        {formatNumber($totalStats.totalUnits)}
+        {formatNumber($totalStats.totalUnits, { showZero: true })}
       </p>
     </div>
   </div>
@@ -50,7 +38,7 @@
     <div class="relative">
       <p class="text-purple-300 text-sm font-medium">Products</p>
       <p class="text-2xl font-bold font-['Fredoka'] mt-1 text-blue-400">
-        {formatNumber($totalStats.uniqueApps)}
+        {formatNumber($totalStats.uniqueApps, { showZero: true })}
       </p>
     </div>
   </div>
@@ -63,7 +51,7 @@
     <div class="relative">
       <p class="text-purple-300 text-sm font-medium">Countries</p>
       <p class="text-2xl font-bold font-['Fredoka'] mt-1 text-green-400">
-        {formatNumber($totalStats.uniqueCountries)}
+        {formatNumber($totalStats.uniqueCountries, { showZero: true })}
       </p>
     </div>
   </div>
@@ -76,7 +64,7 @@
     <div class="relative">
       <p class="text-purple-300 text-sm font-medium">Data Records</p>
       <p class="text-2xl font-bold font-['Fredoka'] mt-1 text-yellow-400">
-        {formatNumber($totalStats.totalRecords)}
+        {formatNumber($totalStats.totalRecords, { showZero: true })}
       </p>
     </div>
   </div>

@@ -1,11 +1,23 @@
 // Browser-mode service implementation
 // Uses Vite proxy for API calls, IndexedDB for storage, localStorage for settings
 
-import type { SalesService, SalesRecord, FetchParams, FetchResult, Filters, SteamChangedDatesResponse, SteamDetailedSalesResponse, ProgressCallback } from './types';
-import { db } from '$lib/db/dexie';
+import type { SalesService, SalesRecord, FetchParams, FetchResult, Filters, SteamChangedDatesResponse, SteamDetailedSalesResponse, ProgressCallback, ApiKeyInfo, ChangedDatesResult } from './types';
+import { db, computeAndStoreAggregates, clearAggregates } from '$lib/db/dexie';
 
-const API_KEY_STORAGE_KEY = 'steam_api_key';
-const HIGHWATERMARK_KEY = 'highwatermark';
+// Storage keys
+const API_KEYS_STORAGE_KEY = 'steam_api_keys'; // JSON array of ApiKeyInfo
+const API_KEY_VALUES_PREFIX = 'steam_api_key_'; // Individual key values: steam_api_key_{id}
+const HIGHWATERMARK_PREFIX = 'highwatermark_'; // Per-key highwatermarks: highwatermark_{id}
+
+// Helper to generate UUID
+function generateId(): string {
+  return crypto.randomUUID();
+}
+
+// Helper to get last 4 chars of key for display
+function getKeyHash(key: string): string {
+  return key.slice(-4);
+}
 
 // Number of dates to fetch in parallel (be respectful to Steam's servers)
 const PARALLEL_BATCH_SIZE = 3;
@@ -33,7 +45,7 @@ export class SyncCancelledError extends Error {
 }
 
 // Helper to fetch all sales for a single date (handles pagination)
-async function fetchSalesForDate(apiKey: string, date: string, signal?: AbortSignal): Promise<SalesRecord[]> {
+async function fetchSalesForDate(apiKey: string, apiKeyId: string, date: string, signal?: AbortSignal): Promise<SalesRecord[]> {
   const dateSales: SalesRecord[] = [];
   let pageHighwatermark = 0;
   let hasMore = true;
@@ -116,6 +128,9 @@ async function fetchSalesForDate(apiKey: string, date: string, signal?: AbortSig
       const keyRequestInfo = item.key_request_id ? keyRequestInfoMap.get(item.key_request_id) : null;
       
       dateSales.push({
+        // API Key association (required)
+        apiKeyId,
+        
         // Core identifiers
         date: item.date,
         lineItemType: item.line_item_type,
@@ -187,6 +202,7 @@ async function fetchSalesForDate(apiKey: string, date: string, signal?: AbortSig
 // This prevents memory issues when processing thousands of dates
 async function processDatesInBatches(
   apiKey: string,
+  apiKeyId: string,
   dates: string[],
   onProgress?: ProgressCallback,
   signal?: AbortSignal
@@ -206,7 +222,7 @@ async function processDatesInBatches(
     // Fetch all dates in this batch in parallel
     const batchResults = await Promise.all(
       batch.map(async (date) => {
-        const sales = await fetchSalesForDate(apiKey, date, signal);
+        const sales = await fetchSalesForDate(apiKey, apiKeyId, date, signal);
         return { date, sales };
       })
     );
@@ -247,16 +263,104 @@ async function processDatesInBatches(
 }
 
 export const browserServices: SalesService = {
-  async getApiKey(): Promise<string | null> {
-    return localStorage.getItem(API_KEY_STORAGE_KEY);
+  // ============================================================================
+  // Multi-key API key management
+  // ============================================================================
+  
+  async getAllApiKeys(): Promise<ApiKeyInfo[]> {
+    const stored = localStorage.getItem(API_KEYS_STORAGE_KEY);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      // Ensure we always return an array
+      if (!Array.isArray(parsed)) {
+        console.warn('API keys storage was not an array, resetting');
+        return [];
+      }
+      return parsed as ApiKeyInfo[];
+    } catch {
+      return [];
+    }
   },
 
-  async setApiKey(key: string): Promise<void> {
-    localStorage.setItem(API_KEY_STORAGE_KEY, key);
+  async getApiKey(id: string): Promise<string | null> {
+    return localStorage.getItem(`${API_KEY_VALUES_PREFIX}${id}`);
+  },
+
+  async addApiKey(key: string, displayName?: string): Promise<ApiKeyInfo> {
+    const id = generateId();
+    const keyInfo: ApiKeyInfo = {
+      id,
+      displayName,
+      keyHash: getKeyHash(key),
+      createdAt: Date.now()
+    };
+    
+    // Store the key value
+    localStorage.setItem(`${API_KEY_VALUES_PREFIX}${id}`, key);
+    
+    // Add to keys list
+    let keys = await this.getAllApiKeys();
+    // Ensure keys is an array (defensive check)
+    if (!Array.isArray(keys)) {
+      console.warn('getAllApiKeys did not return an array, creating new array');
+      keys = [];
+    }
+    keys.push(keyInfo);
+    localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(keys));
+    
+    return keyInfo;
+  },
+
+  async updateApiKeyName(id: string, displayName: string): Promise<void> {
+    const keys = await this.getAllApiKeys();
+    if (!Array.isArray(keys)) throw new Error('API keys storage corrupted');
+    
+    const keyIndex = keys.findIndex(k => k.id === id);
+    if (keyIndex === -1) throw new Error('API key not found');
+    
+    keys[keyIndex].displayName = displayName;
+    localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(keys));
+  },
+
+  async deleteApiKey(id: string): Promise<void> {
+    // Remove the key value
+    localStorage.removeItem(`${API_KEY_VALUES_PREFIX}${id}`);
+    // Remove the highwatermark
+    localStorage.removeItem(`${HIGHWATERMARK_PREFIX}${id}`);
+    
+    // Remove from keys list
+    const keys = await this.getAllApiKeys();
+    const filtered = keys.filter(k => k.id !== id);
+    localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(filtered));
+  },
+
+  // ============================================================================
+  // Data operations
+  // ============================================================================
+
+  async getChangedDates(apiKey: string, apiKeyId: string): Promise<ChangedDatesResult> {
+    const storedHighwatermark = await this.getHighwatermark(apiKeyId);
+    
+    const response = await fetchFromSteamApi<SteamChangedDatesResponse>(
+      'IPartnerFinancialsService/GetChangedDatesForPartner/v1',
+      {
+        key: apiKey,
+        highwatermark: storedHighwatermark.toString()
+      }
+    );
+    
+    const dates = response.response?.dates || [];
+    const rawHighwatermark = response.response?.result_highwatermark;
+    const newHighwatermark = typeof rawHighwatermark === 'string' 
+      ? parseInt(rawHighwatermark, 10) 
+      : (rawHighwatermark ?? storedHighwatermark);
+    
+    return { dates, newHighwatermark };
   },
 
   async fetchSalesData(params: FetchParams): Promise<FetchResult> {
-    const { apiKey, onProgress, signal } = params;
+    const { apiKey, apiKeyId, onProgress, signal } = params;
     
     // Phase 1: Initialize
     onProgress?.({
@@ -273,7 +377,7 @@ export const browserServices: SalesService = {
     }
     
     // Get current highwatermark (stored from previous successful sync)
-    const storedHighwatermark = await this.getHighwatermark();
+    const storedHighwatermark = await this.getHighwatermark(apiKeyId);
     
     // Phase 2: Get changed dates since our last sync
     onProgress?.({
@@ -302,7 +406,6 @@ export const browserServices: SalesService = {
       ? parseInt(rawHighwatermark, 10) 
       : (rawHighwatermark ?? storedHighwatermark);
     
-    
     onProgress?.({
       phase: 'dates',
       message: dates.length > 0
@@ -328,9 +431,31 @@ export const browserServices: SalesService = {
     
     // Phase 3: Fetch sales data in parallel batches
     // Data is saved incrementally to the database to prevent memory issues
-    const totalRecordsSaved = await processDatesInBatches(apiKey, dates, onProgress, signal);
+    const totalRecordsSaved = await processDatesInBatches(apiKey, apiKeyId, dates, onProgress, signal);
     
-    // Phase 4: Data is already saved - just report completion
+    // Phase 4: Compute aggregates for fast queries
+    // This pre-computes summaries so the UI doesn't have to iterate all records
+    if (totalRecordsSaved > 0) {
+      onProgress?.({
+        phase: 'saving',
+        message: 'Computing aggregates for faster loading...',
+        current: 0,
+        total: 100,
+        recordsFetched: totalRecordsSaved
+      });
+      
+      await computeAndStoreAggregates((message, progress) => {
+        onProgress?.({
+          phase: 'saving',
+          message,
+          current: progress,
+          total: 100,
+          recordsFetched: totalRecordsSaved
+        });
+      });
+    }
+    
+    // Phase 5: Data is already saved - just report completion
     // NOTE: We do NOT save the highwatermark here!
     // The caller must save it AFTER this function returns successfully.
     
@@ -339,50 +464,105 @@ export const browserServices: SalesService = {
   },
 
   async getSalesFromDb(filters: Filters): Promise<SalesRecord[]> {
+    // For unfiltered queries on large datasets, consider using pagination
+    // This method still loads all data but uses more efficient queries
     let collection = db.sales.toCollection();
     
+    // Use indexed queries where possible
     if (filters.appId != null) {
       collection = db.sales.where('appId').equals(filters.appId);
+    } else if (filters.startDate && filters.endDate) {
+      collection = db.sales.where('date').between(filters.startDate, filters.endDate, true, true);
+    } else if (filters.startDate) {
+      collection = db.sales.where('date').aboveOrEqual(filters.startDate);
+    } else if (filters.endDate) {
+      collection = db.sales.where('date').belowOrEqual(filters.endDate);
     }
     
     let results = await collection.toArray();
     
-    // Apply date filters in memory (Dexie compound queries can be tricky)
-    if (filters.startDate) {
-      results = results.filter(r => r.date >= filters.startDate!);
-    }
-    if (filters.endDate) {
-      results = results.filter(r => r.date <= filters.endDate!);
-    }
+    // Apply remaining filters in memory
     if (filters.countryCode) {
       results = results.filter(r => r.countryCode === filters.countryCode);
+    }
+    // Date filters if we used appId index instead
+    if (filters.appId != null) {
+      if (filters.startDate) {
+        results = results.filter(r => r.date >= filters.startDate!);
+      }
+      if (filters.endDate) {
+        results = results.filter(r => r.date <= filters.endDate!);
+      }
     }
     
     return results;
   },
 
-  async saveSalesData(data: SalesRecord[]): Promise<void> {
+  async saveSalesData(data: SalesRecord[], apiKeyId: string): Promise<void> {
+    // Tag all records with the API key ID
+    const taggedData = data.map(record => ({ ...record, apiKeyId }));
     // Use bulkPut to handle duplicates (upsert behavior)
-    await db.sales.bulkPut(data);
+    await db.sales.bulkPut(taggedData);
   },
 
-  async getHighwatermark(): Promise<number> {
-    const meta = await db.syncMeta.get(HIGHWATERMARK_KEY);
-    return meta ? parseInt(meta.value, 10) : 0;
+  // ============================================================================
+  // Per-key highwatermark management
+  // ============================================================================
+
+  async getHighwatermark(apiKeyId: string): Promise<number> {
+    const stored = localStorage.getItem(`${HIGHWATERMARK_PREFIX}${apiKeyId}`);
+    return stored ? parseInt(stored, 10) : 0;
   },
 
-  async setHighwatermark(value: number): Promise<void> {
-    await db.syncMeta.put({ key: HIGHWATERMARK_KEY, value: value.toString() });
+  async setHighwatermark(apiKeyId: string, value: number): Promise<void> {
+    localStorage.setItem(`${HIGHWATERMARK_PREFIX}${apiKeyId}`, value.toString());
   },
+
+  // ============================================================================
+  // Data management
+  // ============================================================================
 
   async clearAllData(): Promise<void> {
     // Clear all sales records
     await db.sales.clear();
     
-    // Clear sync metadata (including highwatermark)
+    // Clear sync metadata
     await db.syncMeta.clear();
     
-    // Also clear the API key from localStorage
-    localStorage.removeItem(API_KEY_STORAGE_KEY);
+    // Clear pre-computed aggregates
+    await clearAggregates();
+    
+    // Clear all API keys and their data from localStorage
+    const keys = await this.getAllApiKeys();
+    for (const key of keys) {
+      localStorage.removeItem(`${API_KEY_VALUES_PREFIX}${key.id}`);
+      localStorage.removeItem(`${HIGHWATERMARK_PREFIX}${key.id}`);
+    }
+    localStorage.removeItem(API_KEYS_STORAGE_KEY);
+  },
+
+  async clearDataForKey(apiKeyId: string): Promise<void> {
+    // Delete sales records for this API key
+    await db.sales.where('apiKeyId').equals(apiKeyId).delete();
+    
+    // Reset highwatermark for this key
+    localStorage.removeItem(`${HIGHWATERMARK_PREFIX}${apiKeyId}`);
+    
+    // Recompute aggregates
+    await clearAggregates();
+    const count = await db.sales.count();
+    if (count > 0) {
+      await computeAndStoreAggregates();
+    }
+  },
+
+  async getExistingDates(apiKeyId: string): Promise<Set<string>> {
+    // Get unique dates for this specific API key
+    const dates = new Set<string>();
+    const records = await db.sales.where('apiKeyId').equals(apiKeyId).toArray();
+    for (const record of records) {
+      dates.add(record.date);
+    }
+    return dates;
   }
 };
