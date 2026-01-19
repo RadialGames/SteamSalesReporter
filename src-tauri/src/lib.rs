@@ -28,8 +28,17 @@ pub fn run() {
             // Create data directory if it doesn't exist
             std::fs::create_dir_all(&app_data_dir).expect("Failed to create app data directory");
 
-            // Initialize database
-            let db = Database::new(&app_data_dir).expect("Failed to initialize database");
+            // Initialize database and run cleanup
+            let mut db = Database::new(&app_data_dir).expect("Failed to initialize database");
+            let (duplicate_ids, duplicate_logical) = db
+                .initialize_and_cleanup()
+                .expect("Failed to clean up database");
+            if duplicate_ids > 0 {
+                eprintln!("Database cleanup: removed {} duplicate IDs", duplicate_ids);
+            }
+            if duplicate_logical > 0 {
+                eprintln!("Database cleanup: removed {} duplicate logical records", duplicate_logical);
+            }
 
             // Initialize secure storage
             let storage =

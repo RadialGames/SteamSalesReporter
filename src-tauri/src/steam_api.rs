@@ -2,7 +2,41 @@ use crate::types::{
     FetchResult, SalesRecord, SteamChangedDatesResponse, SteamDetailedSalesResponse,
 };
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 use thiserror::Error;
+
+/// Generate a unique key from Steam API's unique identifying fields.
+/// This creates a deterministic string key that uniquely identifies each sales record.
+/// Must match the TypeScript implementation in steam-transform.ts
+fn generate_unique_key(record: &SalesRecord) -> String {
+    let mut key = String::new();
+    
+    // Always present fields (in consistent order)
+    write!(key, "{}|", record.partnerid.map(|v| v.to_string()).unwrap_or_default()).ok();
+    write!(key, "{}|", record.date).ok();
+    write!(key, "{}|", record.line_item_type).ok();
+    write!(key, "{}|", record.platform.as_deref().unwrap_or("")).ok();
+    write!(key, "{}|", record.country_code).ok();
+    write!(key, "{}|", record.currency.as_deref().unwrap_or("")).ok();
+    write!(key, "{}|", record.api_key_id).ok();
+    
+    // Package-specific fields
+    write!(key, "{}|", record.packageid.map(|v| v.to_string()).unwrap_or_default()).ok();
+    write!(key, "{}|", record.bundleid.map(|v| v.to_string()).unwrap_or_default()).ok();
+    write!(key, "{}|", record.package_sale_type.as_deref().unwrap_or("")).ok();
+    write!(key, "{}|", record.key_request_id.map(|v| v.to_string()).unwrap_or_default()).ok();
+    write!(key, "{}|", record.base_price.as_deref().unwrap_or("")).ok();
+    write!(key, "{}|", record.sale_price.as_deref().unwrap_or("")).ok();
+    
+    // MicroTxn-specific fields
+    write!(key, "{}|", record.appid.map(|v| v.to_string()).unwrap_or_default()).ok();
+    write!(key, "{}|", record.game_item_id.map(|v| v.to_string()).unwrap_or_default()).ok();
+    
+    // Optional fields
+    write!(key, "{}", record.combined_discount_id.map(|v| v.to_string()).unwrap_or_default()).ok();
+    
+    key
+}
 
 const STEAM_API_BASE: &str = "https://partner.steamgames.com/webapi";
 const PARALLEL_BATCH_SIZE: usize = 3;
@@ -155,8 +189,8 @@ impl SteamApi {
 
                 let country_info = country_info_map.get(&item.country_code);
 
-                date_sales.push(SalesRecord {
-                    id: None,
+                let mut record = SalesRecord {
+                    id: None, // Will be set to unique key below
                     api_key_id: api_key_id.to_string(),
                     date: item.date.clone(),
                     line_item_type: item.line_item_type.clone(),
@@ -199,7 +233,11 @@ impl SteamApi {
                     combined_discount_name: None,
                     app_id: primary_appid,
                     units_sold,
-                });
+                };
+                
+                // Generate and set the unique key as the id (primary key)
+                record.id = Some(generate_unique_key(&record));
+                date_sales.push(record);
             }
 
             has_more = max_id > page_highwatermark && !results.is_empty();

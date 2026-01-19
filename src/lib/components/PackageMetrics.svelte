@@ -7,38 +7,86 @@
   import SalesTable from './SalesTable.svelte';
   import type { Filters } from '$lib/services/types';
 
-  let selectedPackageId = $state<number | ''>('');
+  let selectedId = $state<number | ''>('');
   let groupBy = $state<'appId' | 'packageId'>('appId');
   let dataViewTab = $state<'charts' | 'table'>('charts');
 
-  // Get unique packages from sales data
-  const uniquePackages = $derived.by(() => {
-    const packages = new Map<number, string>();
+  // Get unique apps from sales data (only those with revenue)
+  const uniqueApps = $derived.by(() => {
+    const apps = new Map<number, { name: string; revenue: number }>();
     for (const sale of $salesStore) {
-      if (sale.packageid && !packages.has(sale.packageid)) {
-        packages.set(sale.packageid, sale.packageName || `Package ${sale.packageid}`);
+      const revenue = sale.netSalesUsd ?? 0;
+      if (revenue > 0) {
+        const existing = apps.get(sale.appId);
+        if (existing) {
+          existing.revenue += revenue;
+        } else {
+          apps.set(sale.appId, {
+            name: sale.appName || `App ${sale.appId}`,
+            revenue: revenue
+          });
+        }
       }
     }
-    return Array.from(packages.entries())
-      .map(([id, name]) => ({ id, name }))
+    return Array.from(apps.entries())
+      .map(([id, data]) => ({ id, name: data.name }))
       .sort((a, b) => a.name.localeCompare(b.name));
   });
 
-  // Apply package filter when selection changes
+  // Get unique packages from sales data (only those with revenue)
+  const uniquePackages = $derived.by(() => {
+    const packages = new Map<number, { name: string; revenue: number }>();
+    for (const sale of $salesStore) {
+      if (sale.packageid) {
+        const revenue = sale.netSalesUsd ?? 0;
+        if (revenue > 0) {
+          const existing = packages.get(sale.packageid);
+          if (existing) {
+            existing.revenue += revenue;
+          } else {
+            packages.set(sale.packageid, {
+              name: sale.packageName || `Package ${sale.packageid}`,
+              revenue: revenue
+            });
+          }
+        }
+      }
+    }
+    return Array.from(packages.entries())
+      .map(([id, data]) => ({ id, name: data.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  // Get the appropriate list based on groupBy
+  const availableOptions = $derived(groupBy === 'appId' ? uniqueApps : uniquePackages);
+  const dropdownLabel = $derived(groupBy === 'appId' ? 'App' : 'Package');
+  const placeholderText = $derived(groupBy === 'appId' ? 'Select an app...' : 'Select a package...');
+
+  // Reset selection when groupBy changes
+  $effect(() => {
+    const _ = groupBy;
+    selectedId = '';
+  });
+
+  // Apply filter when selection or groupBy changes
   $effect(() => {
     const filters: Filters = {};
     
-    if (selectedPackageId !== '') {
-      filters.packageIds = [selectedPackageId as number];
+    if (selectedId !== '') {
+      if (groupBy === 'appId') {
+        filters.appIds = [selectedId as number];
+      } else {
+        filters.packageIds = [selectedId as number];
+      }
     }
     
     filterStore.setImmediate(filters);
   });
 
-  // Reset selection when packages list changes (e.g., after data refresh)
+  // Reset selection when options list changes (e.g., after data refresh)
   $effect(() => {
-    if (selectedPackageId !== '' && !uniquePackages.some(p => p.id === selectedPackageId)) {
-      selectedPackageId = '';
+    if (selectedId !== '' && !availableOptions.some(opt => opt.id === selectedId)) {
+      selectedId = '';
     }
   });
 </script>
@@ -53,51 +101,49 @@
           Package Metrics
         </h2>
         <p class="text-purple-300 mt-1">
-          View sales data and metrics for a specific package
+          View sales data and metrics for a specific app or package
         </p>
       </div>
       
       <div class="flex flex-wrap items-center gap-4">
-        <!-- Package Selection -->
+        <!-- Group By Toggle -->
         <div class="flex items-center gap-2">
-          <span class="text-purple-200 text-sm whitespace-nowrap">Package:</span>
+          <span class="text-purple-200 text-sm">Group by:</span>
+          <div class="flex rounded-lg bg-white/10 p-1">
+            <button
+              class="px-3 py-1 rounded-md text-sm transition-colors {groupBy === 'appId' 
+                ? 'bg-purple-500 text-white' 
+                : 'text-purple-300 hover:text-white'}"
+              onclick={() => groupBy = 'appId'}
+            >
+              App ID
+            </button>
+            <button
+              class="px-3 py-1 rounded-md text-sm transition-colors {groupBy === 'packageId' 
+                ? 'bg-purple-500 text-white' 
+                : 'text-purple-300 hover:text-white'}"
+              onclick={() => groupBy = 'packageId'}
+            >
+              Package ID
+            </button>
+          </div>
+        </div>
+
+        <!-- Selection Dropdown -->
+        <div class="flex items-center gap-2">
+          <span class="text-purple-200 text-sm whitespace-nowrap">{dropdownLabel}:</span>
           <select
-            bind:value={selectedPackageId}
+            bind:value={selectedId}
             class="px-3 py-2 rounded-lg bg-white/10 border border-white/20 text-white 
                    focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent
                    min-w-[200px]"
           >
-            <option value="">Select a package...</option>
-            {#each uniquePackages as pkg}
-              <option value={pkg.id}>{pkg.name}</option>
+            <option value="">{placeholderText}</option>
+            {#each availableOptions as option}
+              <option value={option.id}>{option.name}</option>
             {/each}
           </select>
         </div>
-
-        <!-- Group By Toggle -->
-        {#if selectedPackageId !== ''}
-          <div class="flex items-center gap-2">
-            <span class="text-purple-200 text-sm">Group by:</span>
-            <div class="flex rounded-lg bg-white/10 p-1">
-              <button
-                class="px-3 py-1 rounded-md text-sm transition-colors {groupBy === 'appId' 
-                  ? 'bg-purple-500 text-white' 
-                  : 'text-purple-300 hover:text-white'}"
-                onclick={() => groupBy = 'appId'}
-              >
-                App ID
-              </button>
-              <button
-                class="px-3 py-1 rounded-md text-sm transition-colors {groupBy === 'packageId' 
-                  ? 'bg-purple-500 text-white' 
-                  : 'text-purple-300 hover:text-white'}"
-                onclick={() => groupBy = 'packageId'}
-              >
-                Package ID
-              </button>
-            </div>
-          </div>
-        {/if}
       </div>
     </div>
   </div>
@@ -110,12 +156,12 @@
         Refresh your sales data to see package metrics.
       </p>
     </div>
-  {:else if selectedPackageId === ''}
+  {:else if selectedId === ''}
     <div class="glass-card p-12 text-center">
       <div class="text-6xl mb-4">&#128270;</div>
-      <h3 class="text-xl font-bold text-purple-200 mb-2">Select a Package</h3>
+      <h3 class="text-xl font-bold text-purple-200 mb-2">Select {groupBy === 'appId' ? 'an App' : 'a Package'}</h3>
       <p class="text-purple-300">
-        Choose a package from the dropdown above to view its metrics.
+        Choose {groupBy === 'appId' ? 'an app' : 'a package'} from the dropdown above to view its metrics.
       </p>
     </div>
   {:else}

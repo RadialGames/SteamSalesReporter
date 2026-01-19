@@ -9,6 +9,26 @@
   import { salesStore, settingsStore, isLoading, errorMessage } from '$lib/stores/sales';
   import type { FetchProgress, ApiKeyInfo } from '$lib/services/types';
 
+  // Session state for tracking sync progress across pause/resume
+  // This is cleared when the modal is closed, ensuring fresh starts work correctly
+  interface KeySyncState {
+    sortedDates: string[];       // Full list of all dates for this key
+    processedDates: Set<string>; // Dates completed in this session
+    newHighwatermark: number;    // HWM to save on success
+    apiKey: string;              // The actual API key value
+    newDates: number;            // Count of new dates (Phase 1)
+    reprocessDates: number;      // Count of update dates (Phase 2)
+    phase1Dates: string[];       // New dates (Phase 1) - processed first
+    phase2Dates: string[];       // Update dates (Phase 2) - processed after all Phase 1
+  }
+  
+  interface SyncSessionState {
+    keyStates: Map<string, KeySyncState>;  // Keyed by apiKeyId
+    keySegments: { keyId: string; keyName: string; newDates: number; reprocessDates: number }[];
+    totalDates: number;
+    totalRecordsFetched: number;
+  }
+
   let showApiKeyModal = $state(false);
   let showProgressModal = $state(false);
   let refreshProgress = $state<FetchProgress & { phase: FetchProgress['phase'] | 'cancelled' }>({
@@ -22,6 +42,9 @@
   let isInitialized = $state(false);
   let stars: { x: number; y: number; delay: number }[] = $state([]);
   let apiKeys = $state<ApiKeyInfo[]>([]);
+  
+  // Session state - persists across pause/resume but cleared on modal close
+  let syncSessionState: SyncSessionState | null = $state(null);
 
   let loadingMessage = $state('Initializing...');
   let loadingProgress = $state(0);
@@ -43,12 +66,18 @@
     loadingMessage = 'Initializing database...';
     loadingProgress = 1; // Show progress bar immediately
     
-    const { cleanedRecords } = await initializeDatabase((message, progress) => {
+    const { cleanedRecords, duplicateIdsRemoved, duplicateLogicalRecordsRemoved } = await initializeDatabase((message, progress) => {
       loadingMessage = message;
       // Map initialization progress (0-100) to first 50% of overall progress
       loadingProgress = Math.round(progress * 0.5);
     });
     
+    if (duplicateIdsRemoved > 0) {
+      console.log(`Startup cleanup: removed ${duplicateIdsRemoved} records with duplicate IDs`);
+    }
+    if (duplicateLogicalRecordsRemoved > 0) {
+      console.log(`Startup cleanup: removed ${duplicateLogicalRecordsRemoved} duplicate logical records`);
+    }
     if (cleanedRecords > 0) {
       console.log(`Startup cleanup: removed ${cleanedRecords} records with missing apiKeyId`);
     }
@@ -118,97 +147,133 @@
       return;
     }
 
+    // Check if we're resuming from a paused state WITH existing session state
+    // Scenario A: Resume - syncSessionState exists and phase is 'cancelled'
+    // Scenario B: Fresh Start - syncSessionState is null (modal was closed)
+    const isResuming = refreshProgress.phase === 'cancelled' && syncSessionState !== null;
+    
     // Create new abort controller for this sync
     abortController = new AbortController();
     
     // Show progress modal
     showProgressModal = true;
-    refreshProgress = {
-      phase: 'init',
-      message: 'Preparing to sync...',
-      current: 0,
-      total: 0,
-      recordsFetched: 0
-    };
     isLoading.set(true);
     errorMessage.set(null);
 
     try {
-      // Phase 1: Pre-count dates across all keys for accurate progress
-      refreshProgress = {
-        phase: 'dates',
-        message: 'Checking for updates across all API keys...',
-        current: 0,
-        total: apiKeys.length,
-        recordsFetched: 0
-      };
+      let keySegments: { keyId: string; keyName: string; newDates: number; reprocessDates: number }[];
+      let totalDatesAcrossAllKeys: number;
+      let totalDatesToReprocess: number;
       
-      const keyDateInfo: { 
-        keyInfo: typeof apiKeys[0]; 
-        apiKey: string; 
-        dates: string[]; 
-        newHighwatermark: number;
-        newDates: number;
-        reprocessDates: number;
-      }[] = [];
-      let totalDatesAcrossAllKeys = 0;
-      let totalDatesToReprocess = 0;
-      
-      // Build key segments for progress bar as we go
-      const keySegments: { keyId: string; keyName: string; newDates: number; reprocessDates: number }[] = [];
-      
-      for (let i = 0; i < apiKeys.length; i++) {
-        const keyInfo = apiKeys[i];
-        const apiKey = await services.getApiKey(keyInfo.id);
+      if (isResuming && syncSessionState) {
+        // SCENARIO A: Resume from pause - use cached session state
+        // Don't re-fetch dates, use the cached sorted order
+        keySegments = syncSessionState.keySegments;
+        totalDatesAcrossAllKeys = syncSessionState.totalDates;
+        totalDatesToReprocess = keySegments.reduce((sum, k) => sum + k.reprocessDates, 0);
         
-        if (!apiKey) continue;
-        
-        // Check if cancelled
-        if (abortController.signal.aborted) {
-          throw new Error('SyncCancelledError');
+        // Calculate current progress from processed dates
+        let processedCount = 0;
+        for (const [, keyState] of syncSessionState.keyStates) {
+          processedCount += keyState.processedDates.size;
         }
         
-        const { dates, newHighwatermark } = await services.getChangedDates(apiKey, keyInfo.id);
-        
-        // Get existing dates to calculate re-processing count
-        const existingDates = await services.getExistingDates(keyInfo.id);
-        const reprocessCount = dates.filter(d => existingDates.has(d)).length;
-        const newCount = dates.length - reprocessCount;
-        
-        totalDatesToReprocess += reprocessCount;
-        totalDatesAcrossAllKeys += dates.length;
-        
-        const keyName = keyInfo.displayName || `Key ...${keyInfo.keyHash}`;
-        
-        keyDateInfo.push({ 
-          keyInfo, 
-          apiKey, 
-          dates, 
-          newHighwatermark,
-          newDates: newCount,
-          reprocessDates: reprocessCount
-        });
-        
-        keySegments.push({
-          keyId: keyInfo.id,
-          keyName,
-          newDates: newCount,
-          reprocessDates: reprocessCount
-        });
+        refreshProgress = {
+          phase: 'sales',
+          message: 'Resuming sync...',
+          current: processedCount,
+          total: totalDatesAcrossAllKeys,
+          recordsFetched: syncSessionState.totalRecordsFetched,
+          keySegments
+        };
+      } else {
+        // SCENARIO B: Fresh start - fetch dates from Steam API
+        syncSessionState = {
+          keyStates: new Map(),
+          keySegments: [],
+          totalDates: 0,
+          totalRecordsFetched: 0
+        };
         
         refreshProgress = {
           phase: 'dates',
-          message: `Checking API key ${i + 1} of ${apiKeys.length}...`,
-          current: i + 1,
+          message: 'Checking for updates across all API keys...',
+          current: 0,
           total: apiKeys.length,
-          recordsFetched: 0,
-          currentKeyId: keyInfo.id,
-          currentKeyName: keyName,
-          currentKeyIndex: i,
-          totalKeys: apiKeys.length,
-          datesToReprocess: totalDatesToReprocess,
-          keySegments: [...keySegments]
+          recordsFetched: 0
         };
+        
+        keySegments = [];
+        totalDatesAcrossAllKeys = 0;
+        totalDatesToReprocess = 0;
+        
+        // Fetch changed dates for each API key and build session state
+        for (let i = 0; i < apiKeys.length; i++) {
+          const keyInfo = apiKeys[i];
+          const apiKey = await services.getApiKey(keyInfo.id);
+          
+          if (!apiKey) continue;
+          
+          // Check if cancelled
+          if (abortController.signal.aborted) {
+            throw new Error('SyncCancelledError');
+          }
+          
+          const { dates, newHighwatermark } = await services.getChangedDates(apiKey, keyInfo.id);
+          
+          // Get existing dates to calculate re-processing count
+          const existingDates = await services.getExistingDates(keyInfo.id);
+          
+          // Separate dates into Phase 1 (new) and Phase 2 (updates)
+          const newDates = dates.filter(d => !existingDates.has(d));
+          const updateDates = dates.filter(d => existingDates.has(d));
+          
+          // Sort each phase chronologically
+          newDates.sort((a, b) => a.localeCompare(b));
+          updateDates.sort((a, b) => a.localeCompare(b));
+          
+          totalDatesToReprocess += updateDates.length;
+          totalDatesAcrossAllKeys += dates.length;
+          
+          const keyName = keyInfo.displayName || `Key ...${keyInfo.keyHash}`;
+          
+          // Store in session state - keep phases separate for ordered processing
+          syncSessionState.keyStates.set(keyInfo.id, {
+            sortedDates: dates, // Keep full list for tracking
+            processedDates: new Set(),
+            newHighwatermark,
+            apiKey,
+            newDates: newDates.length,
+            reprocessDates: updateDates.length,
+            phase1Dates: newDates,   // New dates - processed first
+            phase2Dates: updateDates // Update dates - processed after all Phase 1
+          });
+          
+          keySegments.push({
+            keyId: keyInfo.id,
+            keyName,
+            newDates: newDates.length,
+            reprocessDates: updateDates.length
+          });
+          
+          refreshProgress = {
+            phase: 'dates',
+            message: `Checking API key ${i + 1} of ${apiKeys.length}...`,
+            current: i + 1,
+            total: apiKeys.length,
+            recordsFetched: 0,
+            currentKeyId: keyInfo.id,
+            currentKeyName: keyName,
+            currentKeyIndex: i,
+            totalKeys: apiKeys.length,
+            datesToReprocess: totalDatesToReprocess,
+            keySegments: [...keySegments]
+          };
+        }
+        
+        // Update session state with final counts
+        syncSessionState.keySegments = keySegments;
+        syncSessionState.totalDates = totalDatesAcrossAllKeys;
       }
       
       // If no dates to process, we're done
@@ -220,69 +285,142 @@
           total: 0,
           recordsFetched: 0
         };
+        syncSessionState = null; // Clear session state on complete
         isLoading.set(false);
         abortController = null;
         return;
       }
       
-      // Phase 2: Fetch sales data for each key, tracking cumulative progress
-      let totalRecordCount = 0;
-      let datesProcessedSoFar = 0;
+      // Helper to get total processed dates across all keys
+      const getTotalProcessedDates = () => {
+        let count = 0;
+        for (const [, keyState] of syncSessionState!.keyStates) {
+          count += keyState.processedDates.size;
+        }
+        return count;
+      };
       
-      for (let keyIndex = 0; keyIndex < keyDateInfo.length; keyIndex++) {
-        const { keyInfo, apiKey, dates, newHighwatermark } = keyDateInfo[keyIndex];
+      // Helper to process a batch of dates for a key
+      const processDatesForKey = async (
+        keyId: string,
+        datesToProcess: string[],
+        phaseLabel: string
+      ) => {
+        const keyState = syncSessionState?.keyStates.get(keyId);
+        if (!keyState || datesToProcess.length === 0) return;
         
-        if (dates.length === 0) continue;
+        const keyInfo = apiKeys.find(k => k.id === keyId);
+        const segment = keySegments.find(s => s.keyId === keyId);
+        if (!keyInfo || !segment) return;
         
-        const datesOffsetForThisKey = datesProcessedSoFar;
-        const keyName = keyInfo.displayName || `Key ...${keyInfo.keyHash}`;
+        const keyName = segment.keyName;
         
-        // Fetch data from Steam API for this key
-        const { recordCount = 0 } = await services.fetchSalesData({
-          apiKey,
+        // Filter out already processed dates
+        const remainingDates = datesToProcess.filter(d => !keyState.processedDates.has(d));
+        if (remainingDates.length === 0) return;
+        
+        // Capture the record count BEFORE starting this fetch call
+        // This is the base we'll add to progress.recordsFetched
+        const recordsBeforeThisFetch = syncSessionState?.totalRecordsFetched ?? 0;
+        
+        // Fetch data from Steam API
+        await services.fetchSalesData({
+          apiKey: keyState.apiKey,
           apiKeyId: keyInfo.id,
-          signal: abortController.signal,
+          signal: abortController!.signal,
+          datesToFetch: remainingDates,
           onProgress: (progress) => {
-            // Adjust current/total to reflect cumulative progress across all keys
+            // Use processedDates.size as the authoritative count (updated by onDateProcessed)
+            // Don't add progress.current - it would double-count
+            const totalProcessed = getTotalProcessedDates();
+            
+            // progress.recordsFetched is cumulative within THIS fetch call
+            // Add it to the base from before this fetch started
+            const totalRecordsFetched = recordsBeforeThisFetch + (progress.recordsFetched ?? 0);
+            
+            // Update session state so it's correct if user pauses
+            if (syncSessionState) {
+              syncSessionState.totalRecordsFetched = totalRecordsFetched;
+            }
+            
             refreshProgress = {
               ...progress,
-              current: datesOffsetForThisKey + progress.current,
+              message: `${phaseLabel}: Fetching sales data...`,
+              current: totalProcessed,
               total: totalDatesAcrossAllKeys,
+              recordsFetched: totalRecordsFetched,
               currentKeyId: keyInfo.id,
               currentKeyName: keyName,
-              currentKeyIndex: keyIndex,
-              totalKeys: keyDateInfo.length,
+              totalKeys: keySegments.length,
               datesToReprocess: totalDatesToReprocess,
               keySegments
             };
+          },
+          onDateProcessed: (date: string) => {
+            // Track this date as processed in session state
+            keyState.processedDates.add(date);
           }
         });
+      };
+      
+      // PHASE 1: Process all NEW dates across all keys first
+      for (const segment of keySegments) {
+        const keyState = syncSessionState?.keyStates.get(segment.keyId);
+        if (!keyState) continue;
         
-        datesProcessedSoFar += dates.length;
-        
-        // Save highwatermark AFTER fetch completes successfully
-        const currentHighwatermark = await services.getHighwatermark(keyInfo.id);
-        if (newHighwatermark > currentHighwatermark) {
-          await services.setHighwatermark(keyInfo.id, newHighwatermark);
+        // Check if cancelled
+        if (abortController.signal.aborted) {
+          throw new Error('SyncCancelledError');
         }
         
-        totalRecordCount += recordCount;
+        if (keyState.phase1Dates.length > 0) {
+          await processDatesForKey(segment.keyId, keyState.phase1Dates, 'Phase 1 (New Data)');
+        }
+      }
+      
+      // PHASE 2: Process all UPDATE dates across all keys
+      for (const segment of keySegments) {
+        const keyState = syncSessionState?.keyStates.get(segment.keyId);
+        if (!keyState) continue;
+        
+        // Check if cancelled
+        if (abortController.signal.aborted) {
+          throw new Error('SyncCancelledError');
+        }
+        
+        if (keyState.phase2Dates.length > 0) {
+          await processDatesForKey(segment.keyId, keyState.phase2Dates, 'Phase 2 (Updates)');
+        }
+        
+        // Save highwatermark AFTER all dates for this key are processed
+        if (keyState.processedDates.size === keyState.sortedDates.length) {
+          const keyInfo = apiKeys.find(k => k.id === segment.keyId);
+          if (keyInfo) {
+            const currentHighwatermark = await services.getHighwatermark(keyInfo.id);
+            if (keyState.newHighwatermark > currentHighwatermark) {
+              await services.setHighwatermark(keyInfo.id, keyState.newHighwatermark);
+            }
+          }
+        }
       }
       
       // Always reload all data from database after sync
       const allData = await services.getSalesFromDb({});
       salesStore.setData(allData);
       
-      // Show complete status
+      const totalRecordCount = syncSessionState?.totalRecordsFetched ?? 0;
+      
+      // Show complete status and clear session state
       refreshProgress = {
         phase: 'complete',
         message: totalRecordCount > 0 
           ? `Synced ${totalRecordCount.toLocaleString()} records!`
           : 'Already up to date!',
-        current: refreshProgress.total,
-        total: refreshProgress.total,
+        current: totalDatesAcrossAllKeys,
+        total: totalDatesAcrossAllKeys,
         recordsFetched: totalRecordCount
       };
+      syncSessionState = null; // Clear session state on complete
     } catch (err) {
       // Check if this was a cancellation/pause
       const isCancelled = err instanceof Error && (
@@ -295,6 +433,9 @@
         const allData = await services.getSalesFromDb({});
         salesStore.setData(allData);
         
+        // Keep syncSessionState intact for potential resume!
+        // It will be cleared when modal is closed (Scenario B)
+        
         refreshProgress = {
           phase: 'cancelled',
           message: allData.length > 0 
@@ -302,7 +443,8 @@
             : 'Sync was paused.',
           current: refreshProgress.current,
           total: refreshProgress.total,
-          recordsFetched: allData.length
+          recordsFetched: syncSessionState?.totalRecordsFetched ?? 0,
+          keySegments: syncSessionState?.keySegments
         };
       } else {
         console.error('Error refreshing data:', err);
@@ -316,6 +458,7 @@
           recordsFetched: refreshProgress.recordsFetched,
           error: errorMsg
         };
+        syncSessionState = null; // Clear session state on error
       }
     } finally {
       isLoading.set(false);
@@ -331,6 +474,9 @@
 
   function closeProgressModal() {
     showProgressModal = false;
+    // Clear session state so next Refresh Data starts fresh
+    // This is the key difference between Close (Scenario B) and Resume (Scenario A)
+    syncSessionState = null;
   }
 
   function openSettings() {

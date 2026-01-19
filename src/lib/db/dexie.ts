@@ -76,7 +76,8 @@ class SteamSalesDB extends Dexie {
   aggregatesMeta!: EntityTable<AggregatesMeta, 'key'>;
 
   constructor() {
-    super('SteamSalesDB');
+    // Changed database name in version 5 to force fresh start due to primary key type change
+    super('SteamSalesDB_v2');
     
     // Version 1: Original schema
     this.version(1).stores({
@@ -103,6 +104,38 @@ class SteamSalesDB extends Dexie {
       countryAggregates: 'countryCode',
       aggregatesMeta: 'key'
     });
+    
+    // Version 4: Add unique constraint on id and update composite unique key to include apiKeyId
+    this.version(4).stores({
+      sales: '++id, date, appId, packageId, countryCode, apiKeyId, [date+appId+packageId+countryCode+apiKeyId]',
+      syncMeta: 'key',
+      dailyAggregates: 'date',
+      appAggregates: 'appId',
+      countryAggregates: 'countryCode',
+      aggregatesMeta: 'key'
+    });
+    
+    // Version 5: Delete sales table to prepare for schema change
+    // Dexie doesn't support changing primary key type, so we must delete and recreate
+    this.version(5).stores({
+      // Remove sales table (this deletes it)
+      syncMeta: 'key',
+      dailyAggregates: 'date',
+      appAggregates: 'appId',
+      countryAggregates: 'countryCode',
+      aggregatesMeta: 'key'
+    });
+    
+    // Version 6: Recreate sales table with unique key hash as primary key
+    // This ensures records with the same Steam API identifying fields automatically overwrite
+    this.version(6).stores({
+      sales: 'id, date, appId, packageId, countryCode, apiKeyId, [date+appId+packageId+countryCode+apiKeyId]',
+      syncMeta: 'key',
+      dailyAggregates: 'date',
+      appAggregates: 'appId',
+      countryAggregates: 'countryCode',
+      aggregatesMeta: 'key'
+    });
   }
 }
 
@@ -114,6 +147,149 @@ export const db = new SteamSalesDB();
 
 /** Progress callback for database operations */
 export type DbProgressCallback = (message: string, progress: number) => void;
+
+/**
+ * Clean up duplicate IDs in the database.
+ * In IndexedDB, primary keys should be unique, but this function ensures
+ * that if any duplicates exist (due to data corruption or migration issues),
+ * we keep only the first occurrence of each ID.
+ * Returns the number of duplicate records removed.
+ */
+export async function cleanupDuplicateIds(
+  onProgress?: DbProgressCallback
+): Promise<number> {
+  onProgress?.('Checking for duplicate IDs...', 0);
+  
+  const totalCount = await db.sales.count();
+  
+  if (totalCount === 0) {
+    onProgress?.('No duplicates found', 100);
+    return 0;
+  }
+  
+  onProgress?.(`Scanning ${totalCount.toLocaleString()} records for duplicate IDs...`, 5);
+  
+  // In IndexedDB, primary keys are automatically unique, so we shouldn't find duplicates.
+  // However, we'll scan to be safe and also check for duplicate logical records.
+  const SCAN_BATCH_SIZE = 10000;
+  const seenIds = new Set<string | number>();
+  const duplicateIds: (string | number)[] = [];
+  let offset = 0;
+  
+  while (offset < totalCount) {
+    const batch = await db.sales.offset(offset).limit(SCAN_BATCH_SIZE).toArray();
+    
+    for (const record of batch) {
+      if (record.id !== undefined) {
+        if (seenIds.has(record.id)) {
+          // Found a duplicate ID (shouldn't happen, but handle it)
+          duplicateIds.push(record.id);
+        } else {
+          seenIds.add(record.id);
+        }
+      }
+    }
+    
+    offset += batch.length;
+    const scanProgress = 5 + Math.round((offset / totalCount) * 15);
+    onProgress?.(`Scanning... ${offset.toLocaleString()} / ${totalCount.toLocaleString()}`, scanProgress);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    
+    if (batch.length < SCAN_BATCH_SIZE) break;
+  }
+  
+  if (duplicateIds.length > 0) {
+    console.warn(`Found ${duplicateIds.length} duplicate IDs (this shouldn't happen with IndexedDB primary keys)`);
+    // Delete duplicates, keeping the first occurrence
+    // Since IndexedDB enforces uniqueness, we'll delete all but one
+    const idsToDelete = duplicateIds.slice(1); // Keep first, delete rest
+    // bulkDelete accepts string | number
+    await db.sales.bulkDelete(idsToDelete as any);
+    onProgress?.('Removed duplicate IDs', 100);
+    return idsToDelete.length;
+  }
+  
+  onProgress?.('No duplicate IDs found', 100);
+  return 0;
+}
+
+/**
+ * Clean up duplicate logical records (same business key).
+ * Finds records with the same date+appId+packageId+countryCode+apiKeyId
+ * and keeps only one (the first occurrence).
+ * Returns the number of duplicate records removed.
+ */
+export async function cleanupDuplicateLogicalRecords(
+  onProgress?: DbProgressCallback
+): Promise<number> {
+  onProgress?.('Checking for duplicate logical records...', 0);
+  
+  const totalCount = await db.sales.count();
+  
+  if (totalCount === 0) {
+    onProgress?.('No duplicates found', 100);
+    return 0;
+  }
+  
+  onProgress?.(`Scanning ${totalCount.toLocaleString()} records for duplicates...`, 5);
+  
+  const SCAN_BATCH_SIZE = 10000;
+  const seenKeys = new Map<string, string | number>(); // business key -> first record ID
+  const duplicateIds: (string | number)[] = [];
+  let offset = 0;
+  
+  while (offset < totalCount) {
+    const batch = await db.sales.offset(offset).limit(SCAN_BATCH_SIZE).toArray();
+    
+    for (const record of batch) {
+      if (record.id === undefined) continue;
+      
+      // Create business key: date+appId+packageId+countryCode+apiKeyId
+      const businessKey = `${record.date}|${record.appId}|${record.packageid ?? 0}|${record.countryCode}|${record.apiKeyId || ''}`;
+      
+      const existingId = seenKeys.get(businessKey);
+      if (existingId !== undefined) {
+        // Found a duplicate logical record - mark this one for deletion
+        duplicateIds.push(record.id);
+      } else {
+        // First occurrence - keep it
+        seenKeys.set(businessKey, record.id);
+      }
+    }
+    
+    offset += batch.length;
+    const scanProgress = 5 + Math.round((offset / totalCount) * 40);
+    onProgress?.(`Scanning... ${offset.toLocaleString()} / ${totalCount.toLocaleString()}`, scanProgress);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    
+    if (batch.length < SCAN_BATCH_SIZE) break;
+  }
+  
+  if (duplicateIds.length > 0) {
+    console.log(`Found ${duplicateIds.length} duplicate logical records`);
+    
+    // Delete duplicates in batches
+    const DELETE_BATCH_SIZE = 5000;
+    let deleted = 0;
+    
+    for (let i = 0; i < duplicateIds.length; i += DELETE_BATCH_SIZE) {
+      const batch = duplicateIds.slice(i, i + DELETE_BATCH_SIZE);
+      await db.sales.bulkDelete(batch);
+      deleted += batch.length;
+      
+      const deleteProgress = 45 + Math.round((deleted / duplicateIds.length) * 10);
+      onProgress?.(`Removing duplicates... ${deleted.toLocaleString()} / ${duplicateIds.length.toLocaleString()}`, deleteProgress);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    
+    console.log(`Cleaned up ${duplicateIds.length} duplicate logical records`);
+    onProgress?.('Duplicate cleanup complete', 100);
+    return duplicateIds.length;
+  }
+  
+  onProgress?.('No duplicate logical records found', 100);
+  return 0;
+}
 
 /**
  * Clean up invalid records on startup.
@@ -141,7 +317,7 @@ export async function cleanupInvalidRecords(
   // Find invalid records by scanning in batches for progress feedback
   // We use pagination to allow yielding to the event loop for UI updates
   const SCAN_BATCH_SIZE = 10000;
-  const invalidIds: number[] = [];
+  const invalidIds: (string | number)[] = [];
   let offset = 0;
   
   while (offset < totalCount) {
@@ -176,7 +352,7 @@ export async function cleanupInvalidRecords(
     
     for (let i = 0; i < invalidIds.length; i += DELETE_BATCH_SIZE) {
       const batch = invalidIds.slice(i, i + DELETE_BATCH_SIZE);
-      await db.sales.bulkDelete(batch);
+      await db.sales.bulkDelete(batch as any); // bulkDelete accepts string | number
       deleted += batch.length;
       
       const deleteProgress = 30 + Math.round((deleted / invalidIds.length) * 15);
@@ -208,20 +384,64 @@ export async function cleanupInvalidRecords(
 
 /**
  * Initialize the database - should be called on app startup.
- * Performs cleanup of invalid records.
+ * Performs cleanup of duplicate IDs, duplicate logical records, and invalid records.
  */
 export async function initializeDatabase(
   onProgress?: DbProgressCallback
-): Promise<{ cleanedRecords: number }> {
+): Promise<{ cleanedRecords: number; duplicateIdsRemoved: number; duplicateLogicalRecordsRemoved: number }> {
   onProgress?.('Opening database...', 0);
   
-  // Ensure database is open
-  await db.open();
+  // Try to open the database, handle primary key change errors
+  try {
+    await db.open();
+  } catch (error: any) {
+    // If we get an UpgradeError about changing primary key, delete and recreate the database
+    if (error?.name === 'UpgradeError' && error?.message?.includes('changing primary key')) {
+      console.warn('Primary key change detected. Deleting and recreating database...');
+      onProgress?.('Recreating database with new schema...', 5);
+      
+      // Close the database
+      db.close();
+      
+      // Delete the database
+      await db.delete();
+      
+      // Recreate it
+      await db.open();
+      
+      onProgress?.('Database recreated successfully', 10);
+    } else {
+      // Re-throw other errors
+      throw error;
+    }
+  }
   
-  onProgress?.('Checking database integrity...', 5);
-  const cleanedRecords = await cleanupInvalidRecords(onProgress);
+  onProgress?.('Checking for duplicate IDs...', 2);
+  const duplicateIdsRemoved = await cleanupDuplicateIds((msg, prog) => {
+    // Map progress 0-100 to 2-15
+    const mappedProgress = 2 + Math.round(prog * 0.13);
+    onProgress?.(msg, mappedProgress);
+  });
   
-  return { cleanedRecords };
+  onProgress?.('Checking for duplicate logical records...', 15);
+  const duplicateLogicalRecordsRemoved = await cleanupDuplicateLogicalRecords((msg, prog) => {
+    // Map progress 0-100 to 15-40
+    const mappedProgress = 15 + Math.round(prog * 0.25);
+    onProgress?.(msg, mappedProgress);
+  });
+  
+  onProgress?.('Checking database integrity...', 40);
+  const cleanedRecords = await cleanupInvalidRecords((msg, prog) => {
+    // Map progress 0-100 to 40-100
+    const mappedProgress = 40 + Math.round(prog * 0.60);
+    onProgress?.(msg, mappedProgress);
+  });
+  
+  return { 
+    cleanedRecords, 
+    duplicateIdsRemoved, 
+    duplicateLogicalRecordsRemoved 
+  };
 }
 
 // ============================================================================

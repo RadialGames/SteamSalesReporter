@@ -9,7 +9,7 @@ export interface ApiKeyInfo {
 }
 
 export interface SalesRecord {
-  id?: number;
+  id?: string | number; // String for unique key hash, number for legacy auto-increment
   
   // API Key association
   apiKeyId: string;     // Which API key this data came from
@@ -113,6 +113,11 @@ export interface FetchParams {
   endDate?: string;
   onProgress?: ProgressCallback;
   signal?: AbortSignal;
+  // For resume: custom list of dates to fetch (already sorted and filtered)
+  // If provided, skips fetching changed dates from Steam API
+  datesToFetch?: string[];
+  // Callback when a date is successfully processed (for tracking in session state)
+  onDateProcessed?: (date: string) => void;
 }
 
 export interface Filters {
@@ -201,6 +206,9 @@ export interface SteamDetailedSalesResponse {
 
 // Matches the Steam API response exactly per documentation
 export interface SteamSaleItem {
+  // Record ID from Steam API (used for pagination and unique identification)
+  id?: number;
+  
   // Core identifiers
   date: string;
   line_item_type: string; // "Package", "MicroTxn", etc.

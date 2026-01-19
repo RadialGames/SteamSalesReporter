@@ -35,6 +35,9 @@
     return () => clearInterval(interval);
   });
   
+  // Track previous phase to detect transitions
+  let previousPhase = $state<string | null>(null);
+  
   // Track item completions and reset state on phase changes
   $effect(() => {
     // Track progress.phase and progress.current as dependencies
@@ -44,10 +47,15 @@
     
     // Use untrack to read/write local state without circular dependency
     untrack(() => {
-      // Reset isAborting when starting a new sync (phase goes back to init)
-      if (phase === 'init') {
+      // Reset isAborting when:
+      // 1. Starting a new sync (phase goes to init)
+      // 2. Resuming from paused state (phase goes from 'cancelled' to active phase)
+      if (phase === 'init' || (previousPhase === 'cancelled' && phase !== 'cancelled')) {
         isAborting = false;
       }
+      
+      // Update previous phase for next comparison
+      previousPhase = phase;
       
       // Reset when sync completes, is cancelled, or errors
       if (phase === 'complete' || phase === 'cancelled' || phase === 'error') {

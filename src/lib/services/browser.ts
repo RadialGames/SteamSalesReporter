@@ -19,6 +19,38 @@ function getKeyHash(key: string): string {
   return key.slice(-4);
 }
 
+/**
+ * Save sales records with automatic overwrite support.
+ * Records with the same unique key (generated from Steam API identifying fields)
+ * will automatically overwrite existing records via bulkPut.
+ */
+async function saveSalesWithOverwrite(
+  newRecords: SalesRecord[],
+  apiKeyId: string
+): Promise<void> {
+  if (newRecords.length === 0) return;
+  
+  // Import the function
+  const { generateUniqueKey } = await import('$lib/shared/steam-transform');
+  
+  // Ensure all records have apiKeyId set and unique key generated
+  const taggedRecords = newRecords.map(record => {
+    const r = { 
+      ...record, 
+      apiKeyId: record.apiKeyId || apiKeyId 
+    };
+    // Ensure id (unique key) is set - should already be set by transformSaleItem
+    if (!r.id) {
+      // Fallback: generate unique key if not already set
+      r.id = generateUniqueKey(r);
+    }
+    return r;
+  });
+  
+  // Use bulkPut - it will automatically overwrite records with matching id (unique key)
+  await db.sales.bulkPut(taggedRecords);
+}
+
 // Number of dates to fetch in parallel (be respectful to Steam's servers)
 const PARALLEL_BATCH_SIZE = 3;
 
@@ -198,68 +230,76 @@ async function fetchSalesForDate(apiKey: string, apiKeyId: string, date: string,
   return dateSales;
 }
 
-// Process dates in parallel batches with incremental database saves
-// This prevents memory issues when processing thousands of dates
-async function processDatesInBatches(
-  apiKey: string,
-  apiKeyId: string,
-  dates: string[],
-  onProgress?: ProgressCallback,
-  signal?: AbortSignal
-): Promise<number> {
-  let processedCount = 0;
-  let totalRecords = 0;
+  // Process dates in parallel batches with incremental database saves
+  // This prevents memory issues when processing thousands of dates
+  async function processDatesInBatches(
+    apiKey: string,
+    apiKeyId: string,
+    dates: string[],
+    onProgress?: ProgressCallback,
+    signal?: AbortSignal,
+    onDateProcessed?: (date: string) => void
+  ): Promise<number> {
+    let processedCount = 0;
+    let totalRecords = 0;
+    
+    // Process in batches
+    for (let i = 0; i < dates.length; i += PARALLEL_BATCH_SIZE) {
+      // Check if cancelled before each batch
+      if (signal?.aborted) {
+        throw new SyncCancelledError();
+      }
+    
+      const batch = dates.slice(i, i + PARALLEL_BATCH_SIZE);
+      
+      // Fetch all dates in this batch in parallel
+      const batchResults = await Promise.all(
+        batch.map(async (date) => {
+          const sales = await fetchSalesForDate(apiKey, apiKeyId, date, signal);
+          return { date, sales };
+        })
+      );
+    
+      // Collect batch sales and save immediately to database
+      // This prevents memory accumulation over thousands of dates
+      const batchSales: SalesRecord[] = [];
+      for (const result of batchResults) {
+        batchSales.push(...result.sales);
+        totalRecords += result.sales.length;
+        processedCount++;
+      }
+    
+      // Save this batch to database immediately
+      // Look up existing records by composite key to ensure overwrites instead of duplicates
+      if (batchSales.length > 0) {
+        await saveSalesWithOverwrite(batchSales, apiKeyId);
+      }
+      
+      // Mark dates as processed AFTER successful save
+      // This is critical for correct resume behavior
+      for (const result of batchResults) {
+        onDateProcessed?.(result.date);
+      }
+    
+      // Get the last date in this batch for display
+      const lastDateInBatch = batch[batch.length - 1];
+    
+      // Update progress after each batch (not each result) and yield to UI
+      onProgress?.({
+        phase: 'sales',
+        message: `Fetching sales data...`,
+        current: processedCount,
+        total: dates.length,
+        currentDate: lastDateInBatch,
+        recordsFetched: totalRecords
+      });
+    
+      // Yield to allow UI to update
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
   
-  // Process in batches
-  for (let i = 0; i < dates.length; i += PARALLEL_BATCH_SIZE) {
-    // Check if cancelled before each batch
-    if (signal?.aborted) {
-      throw new SyncCancelledError();
-    }
-    
-    const batch = dates.slice(i, i + PARALLEL_BATCH_SIZE);
-    
-    // Fetch all dates in this batch in parallel
-    const batchResults = await Promise.all(
-      batch.map(async (date) => {
-        const sales = await fetchSalesForDate(apiKey, apiKeyId, date, signal);
-        return { date, sales };
-      })
-    );
-    
-    // Collect batch sales and save immediately to database
-    // This prevents memory accumulation over thousands of dates
-    const batchSales: SalesRecord[] = [];
-    for (const result of batchResults) {
-      batchSales.push(...result.sales);
-      totalRecords += result.sales.length;
-      processedCount++;
-    }
-    
-    // Save this batch to database immediately
-    if (batchSales.length > 0) {
-      await db.sales.bulkPut(batchSales);
-    }
-    
-    // Get the last date in this batch for display
-    const lastDateInBatch = batch[batch.length - 1];
-    
-    // Update progress after each batch (not each result) and yield to UI
-    onProgress?.({
-      phase: 'sales',
-      message: `Fetching sales data...`,
-      current: processedCount,
-      total: dates.length,
-      currentDate: lastDateInBatch,
-      recordsFetched: totalRecords
-    });
-    
-    // Yield to allow UI to update
-    await new Promise(resolve => setTimeout(resolve, 0));
-  }
-  
-  // Return total count (data is already saved to DB)
-  return totalRecords;
+    // Return total count (data is already saved to DB)
+    return totalRecords;
 }
 
 export const browserServices: SalesService = {
@@ -360,64 +400,91 @@ export const browserServices: SalesService = {
   },
 
   async fetchSalesData(params: FetchParams): Promise<FetchResult> {
-    const { apiKey, apiKeyId, onProgress, signal } = params;
-    
-    // Phase 1: Initialize
-    onProgress?.({
-      phase: 'init',
-      message: 'Connecting to Steam Partner API...',
-      current: 0,
-      total: 100,
-      recordsFetched: 0
-    });
+    const { apiKey, apiKeyId, onProgress, signal, datesToFetch, onDateProcessed } = params;
     
     // Check if already cancelled
     if (signal?.aborted) {
       throw new SyncCancelledError();
     }
     
-    // Get current highwatermark (stored from previous successful sync)
-    const storedHighwatermark = await this.getHighwatermark(apiKeyId);
+    let datesToProcess: string[];
+    let newHighwatermark: number;
     
-    // Phase 2: Get changed dates since our last sync
-    onProgress?.({
-      phase: 'dates',
-      message: storedHighwatermark > 0 
-        ? 'Checking for updates since last sync...' 
-        : 'First sync - fetching all historical data...',
-      current: 0,
-      total: 1,
-      recordsFetched: 0
-    });
+    if (datesToFetch && datesToFetch.length > 0) {
+      // RESUME MODE: Use pre-sorted dates provided by caller
+      // Skip fetching changed dates from API - just process the provided list
+      datesToProcess = datesToFetch;
+      // Highwatermark is managed by the caller in resume mode
+      newHighwatermark = await this.getHighwatermark(apiKeyId);
+      
+      onProgress?.({
+        phase: 'sales',
+        message: `Resuming: ${datesToProcess.length} date${datesToProcess.length === 1 ? '' : 's'} remaining...`,
+        current: 0,
+        total: datesToProcess.length,
+        recordsFetched: 0
+      });
+    } else {
+      // FRESH START MODE: Fetch changed dates from Steam API
+      
+      // Phase 1: Initialize
+      onProgress?.({
+        phase: 'init',
+        message: 'Connecting to Steam Partner API...',
+        current: 0,
+        total: 100,
+        recordsFetched: 0
+      });
     
-    const changedDatesResponse = await fetchFromSteamApi<SteamChangedDatesResponse>(
-      'IPartnerFinancialsService/GetChangedDatesForPartner/v1',
-      {
-        key: apiKey,
-        highwatermark: storedHighwatermark.toString()
-      },
-      signal
-    );
+      // Get current highwatermark (stored from previous successful sync)
+      const storedHighwatermark = await this.getHighwatermark(apiKeyId);
     
-    const dates = changedDatesResponse.response?.dates || [];
-    // Parse the new highwatermark as a number (API may return it as string)
-    const rawHighwatermark = changedDatesResponse.response?.result_highwatermark;
-    const newHighwatermark = typeof rawHighwatermark === 'string' 
-      ? parseInt(rawHighwatermark, 10) 
-      : (rawHighwatermark ?? storedHighwatermark);
+      // Phase 2: Get changed dates since our last sync
+      onProgress?.({
+        phase: 'dates',
+        message: storedHighwatermark > 0 
+          ? 'Checking for updates since last sync...' 
+          : 'First sync - fetching all historical data...',
+        current: 0,
+        total: 1,
+        recordsFetched: 0
+      });
     
-    onProgress?.({
-      phase: 'dates',
-      message: dates.length > 0
-        ? `Found ${dates.length} date${dates.length === 1 ? '' : 's'} with new/updated data`
-        : 'Checking complete',
-      current: 1,
-      total: 1,
-      recordsFetched: 0
-    });
+      const changedDatesResponse = await fetchFromSteamApi<SteamChangedDatesResponse>(
+        'IPartnerFinancialsService/GetChangedDatesForPartner/v1',
+        {
+          key: apiKey,
+          highwatermark: storedHighwatermark.toString()
+        },
+        signal
+      );
+    
+      const dates = changedDatesResponse.response?.dates || [];
+      // Parse the new highwatermark as a number (API may return it as string)
+      const rawHighwatermark = changedDatesResponse.response?.result_highwatermark;
+      newHighwatermark = typeof rawHighwatermark === 'string' 
+        ? parseInt(rawHighwatermark, 10) 
+        : (rawHighwatermark ?? storedHighwatermark);
+    
+      // Sort dates: new dates first, then existing dates (both in chronological order)
+      // This ensures new data is processed before re-processing existing data
+      const existingDates = await this.getExistingDates(apiKeyId);
+      const { sortDatesByPriority } = await import('$lib/utils/dates');
+      datesToProcess = sortDatesByPriority(dates, existingDates);
+    
+      onProgress?.({
+        phase: 'dates',
+        message: datesToProcess.length > 0
+          ? `Found ${datesToProcess.length} date${datesToProcess.length === 1 ? '' : 's'} with new/updated data`
+          : 'Checking complete',
+        current: 1,
+        total: 1,
+        recordsFetched: 0
+      });
+    }
     
     // If no dates to process, we're already up to date
-    if (dates.length === 0) {
+    if (datesToProcess.length === 0) {
       onProgress?.({
         phase: 'complete',
         message: 'Already up to date! No new sales data found.',
@@ -431,7 +498,14 @@ export const browserServices: SalesService = {
     
     // Phase 3: Fetch sales data in parallel batches
     // Data is saved incrementally to the database to prevent memory issues
-    const totalRecordsSaved = await processDatesInBatches(apiKey, apiKeyId, dates, onProgress, signal);
+    const totalRecordsSaved = await processDatesInBatches(
+      apiKey, 
+      apiKeyId, 
+      datesToProcess, 
+      onProgress, 
+      signal,
+      onDateProcessed
+    );
     
     // Phase 4: Compute aggregates for fast queries
     // This pre-computes summaries so the UI doesn't have to iterate all records
@@ -501,8 +575,8 @@ export const browserServices: SalesService = {
   async saveSalesData(data: SalesRecord[], apiKeyId: string): Promise<void> {
     // Tag all records with the API key ID
     const taggedData = data.map(record => ({ ...record, apiKeyId }));
-    // Use bulkPut to handle duplicates (upsert behavior)
-    await db.sales.bulkPut(taggedData);
+    // Look up existing records by composite key to ensure overwrites instead of duplicates
+    await saveSalesWithOverwrite(taggedData, apiKeyId);
   },
 
   // ============================================================================

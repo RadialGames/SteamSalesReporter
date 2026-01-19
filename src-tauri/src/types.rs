@@ -16,7 +16,7 @@ pub struct ApiKeyInfo {
 #[serde(rename_all = "camelCase")]
 pub struct SalesRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<i64>,
+    pub id: Option<String>, // Unique key hash from Steam API identifying fields
 
     // API Key association
     pub api_key_id: String,
@@ -194,6 +194,7 @@ pub struct SteamDetailedSalesInner {
 
 #[derive(Debug, Deserialize)]
 pub struct SteamSaleItem {
+    pub id: Option<i64>, // Record ID from Steam API
     pub date: String,
     pub line_item_type: String,
     pub partnerid: Option<i64>,
