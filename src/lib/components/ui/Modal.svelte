@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { startWindowDrag } from '$lib/utils/tauri';
 
   interface Props {
     open: boolean;
@@ -7,6 +8,10 @@
     subtitle?: string;
     icon?: string;
     maxWidth?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl';
+    /** Enable Tauri window dragging on backdrop and header */
+    draggable?: boolean;
+    /** Close modal when clicking backdrop (default: true) */
+    closeOnBackdrop?: boolean;
     onclose?: () => void;
     header?: Snippet;
     children: Snippet;
@@ -19,6 +24,8 @@
     subtitle,
     icon,
     maxWidth = 'lg',
+    draggable = false,
+    closeOnBackdrop = true,
     onclose, 
     header,
     children, 
@@ -35,8 +42,14 @@
   };
 
   function handleBackdropClick(e: MouseEvent) {
-    if (e.target === e.currentTarget && onclose) {
+    if (e.target === e.currentTarget && closeOnBackdrop && onclose) {
       onclose();
+    }
+  }
+
+  function handleBackdropMouseDown(e: MouseEvent) {
+    if (draggable) {
+      startWindowDrag(e);
     }
   }
 
@@ -55,6 +68,7 @@
   <div
     class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
     onclick={handleBackdropClick}
+    onmousedown={handleBackdropMouseDown}
   >
     <div class="rainbow-border {maxWidthClasses[maxWidth]} w-full max-h-[90vh] overflow-hidden flex flex-col">
       <div class="modal-inner p-6 flex flex-col h-full overflow-hidden">
@@ -62,7 +76,11 @@
         {#if header}
           {@render header()}
         {:else if title}
-          <div class="flex items-center justify-between mb-4">
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div 
+            class="flex items-center justify-between mb-4 {draggable ? 'cursor-grab active:cursor-grabbing' : ''}"
+            onmousedown={draggable ? startWindowDrag : undefined}
+          >
             <div class="flex items-center gap-3">
               {#if icon}
                 <span class="text-2xl">{@html icon}</span>

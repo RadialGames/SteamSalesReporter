@@ -33,6 +33,21 @@ export interface LaunchMetricsResult {
   days: DayData[];
 }
 
+// Cache for parsed dates to avoid repeated Date object creation
+const dateCache = new Map<string, number>();
+
+function getDateTimestamp(dateStr: string): number {
+  let ts = dateCache.get(dateStr);
+  if (ts === undefined) {
+    ts = new Date(dateStr).getTime();
+    dateCache.set(dateStr, ts);
+  }
+  return ts;
+}
+
+// Milliseconds in a day
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+
 /**
  * Calculate day-by-day metrics from launch date
  * 
@@ -52,35 +67,47 @@ export function calculateLaunchDays(
   records: SalesRecord[], 
   maxDays: number
 ): LaunchMetricsResult {
-  // Find launch day: earliest date with netSalesUsd > 0
-  const datesWithRevenue = records
-    .filter(r => r.netSalesUsd && r.netSalesUsd > 0)
-    .map(r => r.date)
-    .sort();
+  // OPTIMIZATION: Convert reactive proxy array to plain array to avoid proxy overhead
+  const plainRecords = Array.isArray(records) ? [...records] : records;
   
-  if (datesWithRevenue.length === 0) {
+  // Find launch day: earliest date with netSalesUsd > 0
+  // Use a single pass to find the minimum date instead of filter+map+sort
+  let launchDate: string | null = null;
+  let launchTime = Infinity;
+  
+  for (let i = 0; i < plainRecords.length; i++) {
+    const record = plainRecords[i];
+    if (record.netSalesUsd && record.netSalesUsd > 0) {
+      const ts = getDateTimestamp(record.date);
+      if (ts < launchTime) {
+        launchTime = ts;
+        launchDate = record.date;
+      }
+    }
+  }
+  
+  if (launchDate === null) {
     return { launchDate: null, days: [] };
   }
-
-  const launchDate = datesWithRevenue[0];
-  const launchTime = new Date(launchDate).getTime();
 
   // Group records by day offset from launch
   const dayMap = new Map<number, DayData>();
 
-  for (const record of records) {
-    const recordTime = new Date(record.date).getTime();
-    const dayOffset = Math.floor((recordTime - launchTime) / (1000 * 60 * 60 * 24));
+  for (let i = 0; i < plainRecords.length; i++) {
+    const record = plainRecords[i];
+    const recordTime = getDateTimestamp(record.date);
+    const dayOffset = Math.floor((recordTime - launchTime) / MS_PER_DAY);
     
     // Only include days within maxDays range
     if (dayOffset < 0 || dayOffset >= maxDays) continue;
 
-    if (!dayMap.has(dayOffset)) {
+    let dayData = dayMap.get(dayOffset);
+    if (!dayData) {
       // Calculate the actual date for this day offset
-      const dayDate = new Date(launchTime + dayOffset * 24 * 60 * 60 * 1000);
+      const dayDate = new Date(launchTime + dayOffset * MS_PER_DAY);
       const dateStr = dayDate.toISOString().split('T')[0];
       
-      dayMap.set(dayOffset, {
+      dayData = {
         day: dayOffset,
         date: dateStr,
         sold: 0,
@@ -88,10 +115,10 @@ export function calculateLaunchDays(
         activated: 0,
         bundle: 0,
         netRevenue: 0
-      });
+      };
+      dayMap.set(dayOffset, dayData);
     }
 
-    const dayData = dayMap.get(dayOffset)!;
     dayData.sold += record.grossUnitsSold ?? 0;
     dayData.returned += record.grossUnitsReturned ?? 0;
     dayData.activated += record.grossUnitsActivated ?? 0;
@@ -103,7 +130,7 @@ export function calculateLaunchDays(
     }
   }
 
-  // Convert to array and sort by day
+  // Convert to array and sort by day (small array, fast sort)
   const days = Array.from(dayMap.values()).sort((a, b) => a.day - b.day);
 
   return { launchDate, days };

@@ -2,7 +2,7 @@
 // Uses Tauri invoke to communicate with Rust backend
 
 import { invoke } from '@tauri-apps/api/core';
-import type { SalesService, SalesRecord, FetchParams, FetchResult, Filters, ApiKeyInfo, ChangedDatesResult } from './types';
+import type { SalesService, SalesRecord, FetchParams, FetchResult, Filters, ApiKeyInfo, ChangedDatesResult, DataProgressCallback } from './types';
 
 export const tauriServices: SalesService = {
   // Multi-key API management
@@ -55,11 +55,12 @@ export const tauriServices: SalesService = {
   },
 
   // Data management
-  async clearAllData(): Promise<void> {
+  // Note: Progress callbacks not supported in Tauri mode yet (would require Rust backend changes)
+  async clearAllData(_onProgress?: DataProgressCallback): Promise<void> {
     return invoke('clear_all_data');
   },
 
-  async clearDataForKey(apiKeyId: string): Promise<void> {
+  async clearDataForKey(apiKeyId: string, _onProgress?: DataProgressCallback): Promise<void> {
     return invoke('clear_data_for_key', { apiKeyId });
   },
 

@@ -1,7 +1,7 @@
 // Browser-mode service implementation
 // Uses Vite proxy for API calls, IndexedDB for storage, localStorage for settings
 
-import type { SalesService, SalesRecord, FetchParams, FetchResult, Filters, SteamChangedDatesResponse, SteamDetailedSalesResponse, ProgressCallback, ApiKeyInfo, ChangedDatesResult } from './types';
+import type { SalesService, SalesRecord, FetchParams, FetchResult, Filters, SteamChangedDatesResponse, SteamDetailedSalesResponse, ProgressCallback, ApiKeyInfo, ChangedDatesResult, DataProgressCallback } from './types';
 import { db, computeAndStoreAggregates, clearAggregates } from '$lib/db/dexie';
 
 // Storage keys
@@ -522,15 +522,27 @@ export const browserServices: SalesService = {
   // Data management
   // ============================================================================
 
-  async clearAllData(): Promise<void> {
+  async clearAllData(onProgress?: DataProgressCallback): Promise<void> {
+    onProgress?.('Clearing sales records...', 10);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    
     // Clear all sales records
     await db.sales.clear();
+    
+    onProgress?.('Clearing sync metadata...', 30);
+    await new Promise(resolve => setTimeout(resolve, 0));
     
     // Clear sync metadata
     await db.syncMeta.clear();
     
+    onProgress?.('Clearing aggregates...', 50);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    
     // Clear pre-computed aggregates
     await clearAggregates();
+    
+    onProgress?.('Clearing API keys...', 70);
+    await new Promise(resolve => setTimeout(resolve, 0));
     
     // Clear all API keys and their data from localStorage
     const keys = await this.getAllApiKeys();
@@ -539,21 +551,91 @@ export const browserServices: SalesService = {
       localStorage.removeItem(`${HIGHWATERMARK_PREFIX}${key.id}`);
     }
     localStorage.removeItem(API_KEYS_STORAGE_KEY);
+    
+    onProgress?.('Complete!', 100);
   },
 
-  async clearDataForKey(apiKeyId: string): Promise<void> {
-    // Delete sales records for this API key
-    await db.sales.where('apiKeyId').equals(apiKeyId).delete();
+  async clearDataForKey(apiKeyId: string, onProgress?: DataProgressCallback): Promise<void> {
+    onProgress?.('Counting records to delete...', 5);
+    
+    // Yield to let UI update
+    await new Promise(resolve => setTimeout(resolve, 0));
+    
+    // First count records for this API key
+    const recordsToDelete = await db.sales.where('apiKeyId').equals(apiKeyId).count();
+    
+    if (recordsToDelete === 0) {
+      onProgress?.('No records to delete', 40);
+    } else {
+      onProgress?.(`Found ${recordsToDelete.toLocaleString()} records to delete...`, 8);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      
+      // Get record IDs in batches for progress feedback
+      const COLLECT_BATCH_SIZE = 10000;
+      const recordIds: number[] = [];
+      let offset = 0;
+      
+      while (offset < recordsToDelete) {
+        const batch = await db.sales.where('apiKeyId').equals(apiKeyId)
+          .offset(offset)
+          .limit(COLLECT_BATCH_SIZE)
+          .toArray();
+        
+        for (const record of batch) {
+          if (record.id !== undefined) {
+            recordIds.push(record.id);
+          }
+        }
+        
+        offset += batch.length;
+        
+        // Map collection progress to range 8-15%
+        const collectProgress = 8 + Math.round((offset / recordsToDelete) * 7);
+        onProgress?.(`Collecting records... ${offset.toLocaleString()} / ${recordsToDelete.toLocaleString()}`, collectProgress);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        
+        if (batch.length < COLLECT_BATCH_SIZE) break;
+      }
+      
+      // Delete in batches with progress
+      const DELETE_BATCH_SIZE = 5000;
+      let deleted = 0;
+      
+      for (let i = 0; i < recordIds.length; i += DELETE_BATCH_SIZE) {
+        const batch = recordIds.slice(i, i + DELETE_BATCH_SIZE);
+        await db.sales.bulkDelete(batch);
+        deleted += batch.length;
+        
+        // Map deletion progress to range 15-40%
+        const deleteProgress = 15 + Math.round((deleted / recordIds.length) * 25);
+        onProgress?.(`Deleting... ${deleted.toLocaleString()} / ${recordIds.length.toLocaleString()}`, deleteProgress);
+        
+        // Yield to let UI update
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+    
+    onProgress?.('Resetting sync state...', 42);
     
     // Reset highwatermark for this key
     localStorage.removeItem(`${HIGHWATERMARK_PREFIX}${apiKeyId}`);
+    
+    onProgress?.('Clearing aggregates...', 45);
+    await new Promise(resolve => setTimeout(resolve, 0));
     
     // Recompute aggregates
     await clearAggregates();
     const count = await db.sales.count();
     if (count > 0) {
-      await computeAndStoreAggregates();
+      onProgress?.('Recomputing aggregates...', 50);
+      await computeAndStoreAggregates((message, progress) => {
+        // Map aggregate progress (0-100) to our range (50-95)
+        const mappedProgress = 50 + Math.round(progress * 0.45);
+        onProgress?.(message, mappedProgress);
+      });
     }
+    
+    onProgress?.('Complete!', 100);
   },
 
   async getExistingDates(apiKeyId: string): Promise<Set<string>> {

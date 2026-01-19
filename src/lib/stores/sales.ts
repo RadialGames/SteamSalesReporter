@@ -1,7 +1,30 @@
-// Svelte stores for sales data and application state
+/**
+ * Svelte Stores for Sales Data and Application State
+ * 
+ * This module provides reactive stores for the sales data and derived aggregations.
+ * 
+ * ## Aggregation Strategy
+ * 
+ * The derived stores (dailySummary, appSummary, etc.) use real-time computation
+ * which is suitable for smaller datasets. For larger datasets (>50k records),
+ * consider using:
+ * 
+ * - Web Workers via `computeProductGroups()` from '$lib/workers'
+ * - Pre-computed aggregates from IndexedDB via `getAppAggregates()` from '$lib/db/dexie'
+ * 
+ * ## Debouncing
+ * 
+ * Filter changes are debounced (200ms) to prevent rapid recomputation during
+ * slider/input interactions. The `filterStore` exposes:
+ * - `set/update`: Debounced updates for UI responsiveness
+ * - `setImmediate`: Bypass debounce for programmatic changes
+ * 
+ * @see src/lib/workers/index.ts for the full aggregation strategy documentation
+ */
 
 import { writable, derived, get } from 'svelte/store';
 import type { SalesRecord, DailySummary, AppSummary, CountrySummary, Filters } from '$lib/services/types';
+import { applyFilters, applyFiltersExcluding } from '$lib/utils/filters';
 
 // Debounce delay in milliseconds
 const FILTER_DEBOUNCE_MS = 200;
@@ -95,26 +118,6 @@ export const filterStore = createDebouncedFilterStore();
 // Internal debounced filter store used by derived stores
 const debouncedFilters = debouncedFilterStoreInternal;
 
-// Helper function to apply filters to sales data
-function applyFilters(sales: SalesRecord[], filters: Filters): SalesRecord[] {
-  let filtered = sales;
-  
-  if (filters.startDate) {
-    filtered = filtered.filter(s => s.date >= filters.startDate!);
-  }
-  if (filters.endDate) {
-    filtered = filtered.filter(s => s.date <= filters.endDate!);
-  }
-  if (filters.appId != null) {
-    filtered = filtered.filter(s => s.appId === filters.appId);
-  }
-  if (filters.countryCode) {
-    filtered = filtered.filter(s => s.countryCode === filters.countryCode);
-  }
-  
-  return filtered;
-}
-
 // Flag to track if derived stores are currently computing
 export const isFiltering = writable(false);
 
@@ -167,9 +170,8 @@ export const dailySummary = derived(
 export const appSummary = derived(
   [salesStore, debouncedFilters],
   ([$sales, $filters]) => {
-    // For app summary, don't filter by appId
-    const filtersWithoutApp = { ...$filters, appId: undefined };
-    const filtered = applyFilters($sales, filtersWithoutApp);
+    // For app summary, don't filter by appId or appIds
+    const filtered = applyFiltersExcluding($sales, $filters, 'appId', 'appIds');
 
     const byApp = new Map<number, AppSummary>();
     
@@ -195,8 +197,7 @@ export const countrySummary = derived(
   [salesStore, debouncedFilters],
   ([$sales, $filters]) => {
     // For country summary, don't filter by countryCode
-    const filtersWithoutCountry = { ...$filters, countryCode: undefined };
-    const filtered = applyFilters($sales, filtersWithoutCountry);
+    const filtered = applyFiltersExcluding($sales, $filters, 'countryCode');
 
     const byCountry = new Map<string, CountrySummary>();
     

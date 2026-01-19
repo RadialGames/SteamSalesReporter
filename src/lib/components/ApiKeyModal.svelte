@@ -1,6 +1,9 @@
 <script lang="ts">
   import { services } from '$lib/services';
   import type { ApiKeyInfo } from '$lib/services/types';
+  import { startWindowDrag } from '$lib/utils/tauri';
+  import Modal from '$lib/components/ui/Modal.svelte';
+  import UnicornLoader from '$lib/components/UnicornLoader.svelte';
 
   interface Props {
     onClose: () => void;
@@ -8,9 +11,6 @@
   }
 
   let { onClose, onKeysChanged }: Props = $props();
-  
-  // Check if running in Tauri
-  const isTauri = '__TAURI_INTERNALS__' in window;
   
   // State
   let apiKeys = $state<ApiKeyInfo[]>([]);
@@ -32,6 +32,12 @@
   // Delete/Wipe confirmation
   let confirmAction = $state<{ type: 'delete' | 'wipe'; keyId: string } | null>(null);
   let isProcessing = $state(false);
+  
+  // Wipe progress modal
+  let showWipeProgress = $state(false);
+  let wipeProgressMessage = $state('');
+  let wipeProgressPercent = $state(0);
+  let wipeKeyName = $state('');
   
   // Help section
   let showHelpSection = $state(false);
@@ -186,13 +192,33 @@
   }
 
   async function handleWipeData(keyId: string) {
+    // Find the key name for display
+    const keyInfo = apiKeys.find(k => k.id === keyId);
+    wipeKeyName = keyInfo?.displayName || `Key ...${keyInfo?.keyHash || ''}`;
+    
+    // Close confirmation and show progress modal
+    confirmAction = null;
+    showWipeProgress = true;
+    wipeProgressMessage = 'Preparing to wipe data...';
+    wipeProgressPercent = 0;
     isProcessing = true;
+    
     try {
-      await services.clearDataForKey(keyId);
-      confirmAction = null;
+      await services.clearDataForKey(keyId, (message, progress) => {
+        wipeProgressMessage = message;
+        wipeProgressPercent = progress;
+      });
+      
+      // Brief pause to show completion
+      wipeProgressMessage = 'Complete!';
+      wipeProgressPercent = 100;
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      showWipeProgress = false;
       onKeysChanged?.();
     } catch (err) {
       console.error('Error wiping data:', err);
+      showWipeProgress = false;
       error = err instanceof Error ? err.message : 'Failed to wipe data';
     } finally {
       isProcessing = false;
@@ -200,33 +226,44 @@
   }
 
   async function handleDeleteKey(keyId: string) {
+    // Find the key name for display
+    const keyInfo = apiKeys.find(k => k.id === keyId);
+    wipeKeyName = keyInfo?.displayName || `Key ...${keyInfo?.keyHash || ''}`;
+    
+    // Close confirmation and show progress modal
+    confirmAction = null;
+    showWipeProgress = true;
+    wipeProgressMessage = 'Preparing to delete...';
+    wipeProgressPercent = 0;
     isProcessing = true;
+    
     try {
-      // First wipe the data
-      await services.clearDataForKey(keyId);
+      // First wipe the data with progress
+      await services.clearDataForKey(keyId, (message, progress) => {
+        wipeProgressMessage = message;
+        // Scale progress to 0-90% (leave room for key deletion)
+        wipeProgressPercent = Math.round(progress * 0.9);
+      });
+      
       // Then delete the key
+      wipeProgressMessage = 'Removing API key...';
+      wipeProgressPercent = 95;
       await services.deleteApiKey(keyId);
       await loadApiKeys();
-      confirmAction = null;
+      
+      // Brief pause to show completion
+      wipeProgressMessage = 'Complete!';
+      wipeProgressPercent = 100;
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      showWipeProgress = false;
       onKeysChanged?.();
     } catch (err) {
       console.error('Error deleting API key:', err);
+      showWipeProgress = false;
       error = err instanceof Error ? err.message : 'Failed to delete API key';
     } finally {
       isProcessing = false;
-    }
-  }
-
-  async function startWindowDrag(event: MouseEvent) {
-    // Only start drag if clicking directly on the backdrop or header (not on interactive elements)
-    const target = event.target as HTMLElement;
-    if (target.closest('button, a, input, select, .glass-card')) {
-      return;
-    }
-    
-    if (isTauri) {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      await getCurrentWindow().startDragging();
     }
   }
 
@@ -537,3 +574,30 @@
   </div>
 </div>
 
+<!-- Wipe Progress Modal -->
+<Modal
+  open={showWipeProgress}
+  title="Wiping Data"
+  subtitle={wipeKeyName}
+  icon="&#128465;"
+  maxWidth="sm"
+  draggable={true}
+  closeOnBackdrop={false}
+>
+  <div class="flex flex-col items-center py-4">
+    <UnicornLoader message={wipeProgressMessage} size="small" />
+    
+    <!-- Progress bar -->
+    <div class="mt-6 w-full">
+      <div class="h-2 bg-white/10 rounded-full overflow-hidden">
+        <div 
+          class="h-full bg-gradient-to-r from-orange-500 via-red-500 to-pink-500 transition-all duration-300"
+          style="width: {wipeProgressPercent}%"
+        ></div>
+      </div>
+      <div class="text-center mt-2 text-sm text-purple-300">
+        {wipeProgressPercent}%
+      </div>
+    </div>
+  </div>
+</Modal>

@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { untrack, tick } from 'svelte';
   import { salesStore } from '$lib/stores/sales';
   import ProductLaunchTable from './ProductLaunchTable.svelte';
   import UnicornLoader from './UnicornLoader.svelte';
   import type { SalesRecord } from '$lib/services/types';
-  import { computeProductGroups, shouldUseWorker, type ProductGroup } from '$lib/workers';
+  import { computeProductGroups, shouldUseWorker, type ProductGroup, type WorkerProgress } from '$lib/workers';
+  import { calculateLaunchDays } from '$lib/utils/launch-metrics';
 
   let maxDays = $state(2);
   let copyFeedback = $state(false);
@@ -11,12 +13,21 @@
   
   // Loading state for async computations
   let isComputing = $state(false);
-  let computeProgress = $state({ processed: 0, total: 0 });
   let computedAppGroups = $state<ProductGroup[]>([]);
   let computedPackageGroups = $state<ProductGroup[]>([]);
   let lastComputedDataLength = $state(0);
   let lastComputedGroupBy = $state<'appId' | 'packageId' | null>(null);
   let useWorker = $state(false);
+  
+  // Progress tracking
+  let computeProgress = $state<WorkerProgress>({ processed: 0, total: 0 });
+  let computeStartTime = $state<number | null>(null);
+  let elapsedSeconds = $state(0);
+  let abortController = $state<AbortController | null>(null);
+  
+  // ETA calculation
+  const MIN_SAMPLES_FOR_ETA = 3;
+  let progressSamples = $state<{ time: number; processed: number }[]>([]);
   
   // Virtual/lazy loading state
   const INITIAL_VISIBLE = 10;
@@ -24,88 +35,104 @@
   let visibleCount = $state(INITIAL_VISIBLE);
   let loadMoreRef = $state<HTMLDivElement | null>(null);
   let observer: IntersectionObserver | null = null;
-
-  // Chunk size for processing - yields to UI every N records (for main thread fallback)
-  const CHUNK_SIZE = 50000;
-
-  // Async function to compute groups with UI yields (main thread fallback)
-  async function computeGroupsMainThread(
-    records: SalesRecord[],
-    mode: 'appId' | 'packageId'
-  ): Promise<ProductGroup[]> {
-    const groups = new Map<number, ProductGroup>();
-    const total = records.length;
-    
-    for (let i = 0; i < total; i += CHUNK_SIZE) {
-      const chunk = records.slice(i, Math.min(i + CHUNK_SIZE, total));
-      
-      for (const record of chunk) {
-        const id = mode === 'appId' ? record.appId : record.packageid;
-        if (id == null) continue;
-        
-        if (!groups.has(id)) {
-          const name = mode === 'appId' 
-            ? (record.appName || `App ${id}`)
-            : (record.packageName || `Package ${id}`);
-          groups.set(id, {
-            id,
-            name,
-            records: [],
-            hasRevenue: false
-          });
-        }
-        
-        const group = groups.get(id)!;
-        group.records.push(record);
-        
-        if (record.netSalesUsd && record.netSalesUsd > 0) {
-          group.hasRevenue = true;
-        }
-      }
-      
-      // Update progress and yield to UI
-      computeProgress = { processed: Math.min(i + CHUNK_SIZE, total), total };
-      await new Promise(resolve => setTimeout(resolve, 0));
+  
+  // Update elapsed time every second while computing
+  let elapsedInterval: ReturnType<typeof setInterval> | null = null;
+  
+  $effect(() => {
+    if (isComputing && computeStartTime) {
+      elapsedInterval = setInterval(() => {
+        elapsedSeconds = Math.floor((Date.now() - computeStartTime!) / 1000);
+      }, 1000);
+      return () => {
+        if (elapsedInterval) clearInterval(elapsedInterval);
+      };
+    } else if (elapsedInterval) {
+      clearInterval(elapsedInterval);
+      elapsedInterval = null;
     }
+  });
+  
+  // Calculate progress percentage
+  const progressPercent = $derived(
+    computeProgress.total > 0 
+      ? Math.round((computeProgress.processed / computeProgress.total) * 100) 
+      : 0
+  );
+  
+  // Calculate throughput (records per second)
+  const throughput = $derived.by(() => {
+    if (elapsedSeconds < 1 || computeProgress.processed < 1000) return null;
+    return Math.round(computeProgress.processed / elapsedSeconds);
+  });
+  
+  // Calculate ETA
+  const estimatedTimeRemaining = $derived.by(() => {
+    if (progressSamples.length < MIN_SAMPLES_FOR_ETA) return null;
+    if (computeProgress.processed >= computeProgress.total) return null;
     
-    return Array.from(groups.values())
-      .filter(g => g.hasRevenue && g.id != null)
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const remaining = computeProgress.total - computeProgress.processed;
+    const recentSamples = progressSamples.slice(-5);
+    const oldestSample = recentSamples[0];
+    const newestSample = recentSamples[recentSamples.length - 1];
+    
+    const timeDiff = newestSample.time - oldestSample.time;
+    const processedDiff = newestSample.processed - oldestSample.processed;
+    
+    if (timeDiff <= 0 || processedDiff <= 0) return null;
+    
+    const msPerRecord = timeDiff / processedDiff;
+    const etaMs = msPerRecord * remaining;
+    
+    if (etaMs < 3000) return null; // Don't show for < 3 seconds
+    
+    const seconds = Math.floor(etaMs / 1000);
+    const minutes = Math.floor(seconds / 60);
+    
+    if (minutes > 0) {
+      return `~${minutes}m ${seconds % 60}s remaining`;
+    }
+    return `~${seconds}s remaining`;
+  });
+  
+  // Handle progress updates - use untrack to prevent triggering effects
+  function onProgress(progress: WorkerProgress) {
+    untrack(() => {
+      computeProgress = progress;
+      progressSamples = [...progressSamples.slice(-9), { time: Date.now(), processed: progress.processed }];
+    });
   }
-
-  // Compute groups using worker or main thread based on data size
-  async function computeGroupsAsync(
-    records: SalesRecord[],
-    mode: 'appId' | 'packageId'
-  ): Promise<ProductGroup[]> {
-    useWorker = shouldUseWorker(records.length);
-    
-    if (useWorker) {
-      // Use Web Worker for large datasets
-      computeProgress = { processed: 0, total: records.length };
-      try {
-        const result = await computeProductGroups(records, mode);
-        computeProgress = { processed: records.length, total: records.length };
-        return result;
-      } catch (error) {
-        console.warn('Worker failed, falling back to main thread:', error);
-        // Fall through to main thread computation
-      }
+  
+  // Cancel current computation
+  function cancelComputation() {
+    if (abortController) {
+      abortController.abort();
+      abortController = null;
+      isComputing = false;
     }
-    
-    // Main thread computation with progress updates
-    return computeGroupsMainThread(records, mode);
   }
 
   // Trigger recomputation when data or groupBy changes
+  // Uses the shared worker manager which handles worker vs main thread fallback
   $effect(() => {
     const records = $salesStore;
     const currentGroupBy = groupBy;
     
+    // Use untrack to read state without creating dependencies
+    const lastLength = untrack(() => lastComputedDataLength);
+    const lastGroupBy = untrack(() => lastComputedGroupBy);
+    
     // Check if we need to recompute
-    if (records.length === lastComputedDataLength && currentGroupBy === lastComputedGroupBy) {
+    if (records.length === lastLength && currentGroupBy === lastGroupBy) {
       return;
     }
+    
+    // Cancel any existing computation (read without tracking)
+    untrack(() => {
+      if (abortController) {
+        abortController.abort();
+      }
+    });
     
     // Skip if no data
     if (records.length === 0) {
@@ -116,19 +143,65 @@
       return;
     }
     
-    // Start async computation
-    isComputing = true;
-    computeProgress = { processed: 0, total: records.length };
+    // Reset progress state (write without triggering this effect)
+    untrack(() => {
+      computeProgress = { processed: 0, total: records.length };
+      computeStartTime = Date.now();
+      elapsedSeconds = 0;
+      progressSamples = [];
+    });
     
-    computeGroupsAsync(records, currentGroupBy).then(groups => {
-      if (currentGroupBy === 'appId') {
-        computedAppGroups = groups;
-      } else {
-        computedPackageGroups = groups;
-      }
-      lastComputedDataLength = records.length;
-      lastComputedGroupBy = currentGroupBy;
-      isComputing = false;
+    // Create new abort controller
+    const controller = new AbortController();
+    abortController = controller;
+    
+    // Set loading state
+    isComputing = true;
+    useWorker = shouldUseWorker(records.length);
+    
+    // Use tick() to flush Svelte DOM updates, then RAF to yield to browser paint,
+    // ensuring the loading state is visible before computation starts
+    tick().then(() => {
+      requestAnimationFrame(() => {
+        // Double-check we weren't cancelled during the yield
+        if (controller.signal.aborted) return;
+        
+        computeProductGroups(records, currentGroupBy, {
+          onProgress,
+          signal: controller.signal
+        }).then(async (groups) => {
+          // CRITICAL: Use JSON parse/stringify to strip Svelte proxies from nested records
+          // Without this, accessing record properties in tight loops is extremely slow (~8 seconds)
+          const plainGroups = JSON.parse(JSON.stringify(groups)) as typeof groups;
+          
+          // Compute launch metrics if not already computed (worker path doesn't compute them)
+          // This happens AFTER JSON serialization, so records are plain objects = fast
+          for (const group of plainGroups) {
+            if (!group.launchMetrics) {
+              group.launchMetrics = calculateLaunchDays(group.records, 365);
+            }
+          }
+          
+          if (currentGroupBy === 'appId') {
+            computedAppGroups = plainGroups;
+          } else {
+            computedPackageGroups = plainGroups;
+          }
+          lastComputedDataLength = records.length;
+          lastComputedGroupBy = currentGroupBy;
+          isComputing = false;
+          abortController = null;
+          
+          await tick();
+        }).catch(error => {
+          // Only log if not a cancellation
+          if (error.message !== 'Computation cancelled') {
+            console.error('Computation error:', error);
+          }
+          isComputing = false;
+          abortController = null;
+        });
+      });
     });
   });
 
@@ -269,7 +342,7 @@
     const link = document.createElement('a');
     link.setAttribute('href', url);
     const suffix = groupBy === 'appId' ? 'by_app' : 'by_package';
-    link.setAttribute('download', `kim_style_report_${suffix}.csv`);
+    link.setAttribute('download', `launch_comparison_${suffix}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -284,7 +357,7 @@
       <div>
         <h2 class="text-2xl font-bold font-['Fredoka'] flex items-center gap-2">
           <span class="text-3xl">&#128640;</span>
-          Kim Style Report
+          Launch Comparison
         </h2>
         <p class="text-purple-300 mt-1">
           Product performance from launch day, aggregated by day age
@@ -370,29 +443,66 @@
       <div class="text-6xl mb-4">&#128202;</div>
       <h3 class="text-xl font-bold text-purple-200 mb-2">No Data Available</h3>
       <p class="text-purple-300">
-        Refresh your sales data to see the Kim Style report.
+        Refresh your sales data to see the Launch Comparison.
       </p>
     </div>
   {:else if isComputing}
     <div class="glass-card p-12 text-center">
       <UnicornLoader 
-        message={useWorker 
-          ? "Processing in background..." 
-          : `Processing ${computeProgress.processed.toLocaleString()} of ${computeProgress.total.toLocaleString()} records...`} 
+        message={`Processing ${computeProgress.processed.toLocaleString()} of ${computeProgress.total.toLocaleString()} records...`}
         size="medium" 
       />
-      {#if !useWorker}
-        <div class="mt-4 w-full max-w-md mx-auto">
-          <div class="h-2 bg-white/10 rounded-full overflow-hidden">
-            <div 
-              class="h-full bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 transition-all duration-300"
-              style="width: {computeProgress.total > 0 ? (computeProgress.processed / computeProgress.total * 100) : 0}%"
-            ></div>
+      
+      <!-- Progress Bar -->
+      <div class="mt-6 w-full max-w-md mx-auto">
+        <div class="flex justify-between text-sm text-purple-300 mb-2">
+          <span>Progress</span>
+          <span>{progressPercent}%</span>
+        </div>
+        <div class="h-3 bg-purple-900/50 rounded-full overflow-hidden">
+          <div 
+            class="h-full bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 transition-all duration-300 ease-out rounded-full relative"
+            style="width: {progressPercent}%"
+          >
+            {#if progressPercent > 0 && progressPercent < 100}
+              <div class="absolute inset-0 bg-white/20 animate-pulse"></div>
+            {/if}
           </div>
         </div>
-      {:else}
-        <p class="mt-4 text-purple-300 text-sm">Using background worker for better performance</p>
-      {/if}
+        
+        <!-- Stats Row -->
+        <div class="flex justify-between items-center mt-2 text-xs text-purple-400">
+          <span>
+            {#if elapsedSeconds > 0}
+              {elapsedSeconds}s elapsed
+            {:else}
+              Starting...
+            {/if}
+          </span>
+          <span>
+            {#if estimatedTimeRemaining}
+              {estimatedTimeRemaining}
+            {:else if throughput}
+              {throughput.toLocaleString()} records/sec
+            {/if}
+          </span>
+        </div>
+      </div>
+      
+      <!-- Worker indicator and Cancel button -->
+      <div class="mt-4 flex flex-col items-center gap-3">
+        {#if useWorker}
+          <p class="text-purple-300 text-sm">Using background worker for better performance</p>
+        {/if}
+        <button
+          type="button"
+          class="px-4 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 border border-yellow-500/50 
+                 text-yellow-300 rounded-lg font-semibold text-sm transition-colors"
+          onclick={cancelComputation}
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   {:else if productGroups.length === 0}
     <div class="glass-card p-12 text-center">
@@ -424,6 +534,7 @@
         name={product.name}
         idLabel={groupBy === 'appId' ? 'App ID' : 'Package ID'}
         records={product.records}
+        launchMetrics={product.launchMetrics}
         {maxDays}
       />
     {/each}

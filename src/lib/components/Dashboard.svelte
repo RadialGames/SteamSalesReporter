@@ -5,7 +5,8 @@
   import SkuComparison from './SkuComparison.svelte';
   import CountryChart from './CountryChart.svelte';
   import SalesTable from './SalesTable.svelte';
-  import KimStyleReport from './KimStyleReport.svelte';
+  import LaunchComparison from './LaunchComparison.svelte';
+  import PackageMetrics from './PackageMetrics.svelte';
   import { salesStore } from '$lib/stores/sales';
   import type { ApiKeyInfo } from '$lib/services/types';
 
@@ -15,7 +16,7 @@
 
   let { apiKeys = [] }: Props = $props();
 
-  let topLevelTab = $state<'dataView' | 'kimStyle'>('dataView');
+  let topLevelTab = $state<'dataView' | 'launchComparison' | 'packageMetrics'>('dataView');
   let dataViewTab = $state<'charts' | 'table'>('charts');
 </script>
 
@@ -64,13 +65,22 @@
         Data View
       </button>
       <button
-        class="px-6 py-3 rounded-t-lg font-bold text-lg transition-all {topLevelTab === 'kimStyle' 
+        class="px-6 py-3 rounded-t-lg font-bold text-lg transition-all {topLevelTab === 'launchComparison' 
           ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30' 
           : 'bg-white/5 text-purple-300 hover:bg-white/10'}"
-        onclick={() => topLevelTab = 'kimStyle'}
+        onclick={() => topLevelTab = 'launchComparison'}
       >
         <span class="mr-2">&#128640;</span>
-        Kim Style
+        Launch Comparison
+      </button>
+      <button
+        class="px-6 py-3 rounded-t-lg font-bold text-lg transition-all {topLevelTab === 'packageMetrics' 
+          ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30' 
+          : 'bg-white/5 text-purple-300 hover:bg-white/10'}"
+        onclick={() => topLevelTab = 'packageMetrics'}
+      >
+        <span class="mr-2">&#128202;</span>
+        Package Metrics
       </button>
     </div>
 
@@ -79,7 +89,7 @@
       <StatsCards />
 
       <!-- Filter Bar -->
-      <FilterBar {apiKeys} />
+      <FilterBar />
 
       <!-- Data View Tab Navigation -->
       <div class="flex gap-2">
@@ -125,9 +135,12 @@
         <!-- Data Table -->
         <SalesTable />
       {/if}
-    {:else}
-      <!-- Kim Style Report -->
-      <KimStyleReport />
+    {:else if topLevelTab === 'launchComparison'}
+      <!-- Launch Comparison -->
+      <LaunchComparison />
+    {:else if topLevelTab === 'packageMetrics'}
+      <!-- Package Metrics -->
+      <PackageMetrics />
     {/if}
   {/if}
 </div>

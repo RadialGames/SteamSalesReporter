@@ -1,7 +1,8 @@
 // Web Worker for heavy aggregation computations
 // This runs off the main thread to keep the UI responsive
 
-import type { SalesRecord } from '$lib/services/types';
+import type { SalesRecord, Filters } from '$lib/services/types';
+import { applyFilters, applyFiltersExcluding } from '$lib/utils/filters';
 
 // Message types
 interface ComputeGroupsMessage {
@@ -16,18 +17,13 @@ interface ComputeAggregatesMessage {
   type: 'computeAggregates';
   data: {
     records: SalesRecord[];
-    filters: {
-      startDate?: string;
-      endDate?: string;
-      appId?: number;
-      countryCode?: string;
-    };
+    filters: Filters;
   };
 }
 
 type WorkerMessage = ComputeGroupsMessage | ComputeAggregatesMessage;
 
-// Product group type (matches KimStyleReport)
+// Product group type (matches LaunchComparison)
 interface ProductGroup {
   id: number;
   name: string;
@@ -35,34 +31,20 @@ interface ProductGroup {
   hasRevenue: boolean;
 }
 
-// Apply filters to records
-function applyFilters(
+// Progress reporting interval (every N records)
+const PROGRESS_INTERVAL = 10000;
+
+// Compute product groups (for Launch Comparison) with progress reporting
+function computeGroups(
   records: SalesRecord[],
-  filters: { startDate?: string; endDate?: string; appId?: number; countryCode?: string }
-): SalesRecord[] {
-  let filtered = records;
-
-  if (filters.startDate) {
-    filtered = filtered.filter((s) => s.date >= filters.startDate!);
-  }
-  if (filters.endDate) {
-    filtered = filtered.filter((s) => s.date <= filters.endDate!);
-  }
-  if (filters.appId != null) {
-    filtered = filtered.filter((s) => s.appId === filters.appId);
-  }
-  if (filters.countryCode) {
-    filtered = filtered.filter((s) => s.countryCode === filters.countryCode);
-  }
-
-  return filtered;
-}
-
-// Compute product groups (for Kim Style report)
-function computeGroups(records: SalesRecord[], mode: 'appId' | 'packageId'): ProductGroup[] {
+  mode: 'appId' | 'packageId',
+  messageId?: string
+): ProductGroup[] {
   const groups = new Map<number, ProductGroup>();
+  const total = records.length;
 
-  for (const record of records) {
+  for (let i = 0; i < total; i++) {
+    const record = records[i];
     const id = mode === 'appId' ? record.appId : record.packageid;
     if (id == null) continue;
 
@@ -85,7 +67,23 @@ function computeGroups(records: SalesRecord[], mode: 'appId' | 'packageId'): Pro
     if (record.netSalesUsd && record.netSalesUsd > 0) {
       group.hasRevenue = true;
     }
+
+    // Report progress at regular intervals
+    if (i > 0 && i % PROGRESS_INTERVAL === 0) {
+      self.postMessage({
+        type: 'progress',
+        data: { processed: i, total },
+        id: messageId
+      });
+    }
   }
+
+  // Final progress update before returning results
+  self.postMessage({
+    type: 'progress',
+    data: { processed: total, total },
+    id: messageId
+  });
 
   return Array.from(groups.values())
     .filter((g) => g.hasRevenue && g.id != null)
@@ -93,10 +91,7 @@ function computeGroups(records: SalesRecord[], mode: 'appId' | 'packageId'): Pro
 }
 
 // Compute all aggregates at once
-function computeAggregates(
-  records: SalesRecord[],
-  filters: { startDate?: string; endDate?: string; appId?: number; countryCode?: string }
-) {
+function computeAggregates(records: SalesRecord[], filters: Filters) {
   const filtered = applyFilters(records, filters);
 
   // Daily summary
@@ -113,8 +108,8 @@ function computeAggregates(
   }
   const dailySummary = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
 
-  // App summary (without appId filter)
-  const filteredForApps = applyFilters(records, { ...filters, appId: undefined });
+  // App summary (without appId/appIds filter)
+  const filteredForApps = applyFiltersExcluding(records, filters, 'appId', 'appIds');
   const byApp = new Map<number, { appId: number; appName: string; totalRevenue: number; totalUnits: number }>();
   for (const sale of filteredForApps) {
     const existing = byApp.get(sale.appId) || {
@@ -131,7 +126,7 @@ function computeAggregates(
   const appSummary = Array.from(byApp.values()).sort((a, b) => b.totalRevenue - a.totalRevenue);
 
   // Country summary (without countryCode filter)
-  const filteredForCountries = applyFilters(records, { ...filters, countryCode: undefined });
+  const filteredForCountries = applyFiltersExcluding(records, filters, 'countryCode');
   const byCountry = new Map<string, { countryCode: string; totalRevenue: number; totalUnits: number }>();
   for (const sale of filteredForCountries) {
     const existing = byCountry.get(sale.countryCode) || {
@@ -169,7 +164,7 @@ self.onmessage = (event: MessageEvent<WorkerMessage & { id?: string }>) => {
   try {
     switch (type) {
       case 'computeGroups': {
-        const result = computeGroups(data.records, data.mode);
+        const result = computeGroups(data.records, data.mode, id);
         self.postMessage({ type: 'groupsResult', data: result, id });
         break;
       }

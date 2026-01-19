@@ -31,6 +31,9 @@
     if (filters.appIds && filters.appIds.length > 0) {
       data = data.filter(r => filters.appIds!.includes(r.appId));
     }
+    if (filters.packageIds && filters.packageIds.length > 0) {
+      data = data.filter(r => r.packageid != null && filters.packageIds!.includes(r.packageid));
+    }
     if (filters.countryCode) {
       data = data.filter(r => r.countryCode === filters.countryCode);
     }

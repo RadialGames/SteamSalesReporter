@@ -39,15 +39,23 @@
       delay: Math.random() * 2
     }));
 
-    // Initialize database and clean up invalid records
+    // Initialize database and clean up invalid records with progress
     loadingMessage = 'Initializing database...';
-    const { cleanedRecords } = await initializeDatabase();
+    loadingProgress = 1; // Show progress bar immediately
+    
+    const { cleanedRecords } = await initializeDatabase((message, progress) => {
+      loadingMessage = message;
+      // Map initialization progress (0-100) to first 50% of overall progress
+      loadingProgress = Math.round(progress * 0.5);
+    });
+    
     if (cleanedRecords > 0) {
       console.log(`Startup cleanup: removed ${cleanedRecords} records with missing apiKeyId`);
     }
 
     // Check if API keys exist
     loadingMessage = 'Checking settings...';
+    loadingProgress = 55;
     await loadApiKeys();
     
     if (apiKeys.length === 0 || !apiKeys[0]) {
@@ -63,17 +71,19 @@
       
       // Load existing data from database with progress indication
       loadingMessage = 'Loading sales data...';
-      loadingProgress = 10;
+      loadingProgress = 60;
       
       try {
         const existingData = await services.getSalesFromDb({});
-        loadingProgress = 80;
+        loadingProgress = 85;
         
         if (existingData.length > 0) {
           loadingMessage = `Processing ${existingData.length.toLocaleString()} records...`;
           // Give UI time to update before potentially heavy store operation
           await new Promise(resolve => setTimeout(resolve, 0));
           salesStore.setData(existingData);
+          loadingProgress = 100;
+        } else {
           loadingProgress = 100;
         }
       } catch (error) {

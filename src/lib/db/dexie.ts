@@ -1,5 +1,34 @@
-// IndexedDB database using Dexie.js
-// Used in browser development mode
+/**
+ * IndexedDB Database using Dexie.js
+ * 
+ * This module provides persistent storage for sales data and pre-computed aggregates.
+ * 
+ * ## Pre-computed Aggregates
+ * 
+ * For large datasets, we pre-compute aggregates after data sync to enable instant
+ * reads without iterating through all records. This is part of the three-tier
+ * aggregation strategy:
+ * 
+ * 1. **Real-time stores** (sales.ts): For small datasets with active filtering
+ * 2. **Web Workers** (workers/): For large datasets during UI interaction
+ * 3. **Pre-computed tables** (this file): For initial load and dashboard stats
+ * 
+ * ### When to Recompute Aggregates
+ * 
+ * Call `computeAndStoreAggregates()` after:
+ * - Data sync completes (new records added)
+ * - Data is cleared or deleted
+ * - App determines aggregates are stale via `aggregatesNeedUpdate()`
+ * 
+ * ### Aggregate Tables
+ * 
+ * - `dailyAggregates`: Revenue and units per date
+ * - `appAggregates`: Revenue and units per app, with date range
+ * - `countryAggregates`: Revenue and units per country
+ * - `aggregatesMeta`: Tracks when aggregates were last updated
+ * 
+ * @see src/lib/workers/index.ts for the aggregation strategy documentation
+ */
 
 import Dexie, { type EntityTable } from 'dexie';
 import type { SalesRecord, SyncMeta, Filters } from '$lib/services/types';
@@ -83,43 +112,115 @@ export const db = new SteamSalesDB();
 // Database Initialization & Cleanup
 // ============================================================================
 
+/** Progress callback for database operations */
+export type DbProgressCallback = (message: string, progress: number) => void;
+
 /**
  * Clean up invalid records on startup.
  * Deletes any sales records that don't have a valid apiKeyId.
  * Returns the number of records deleted.
  */
-export async function cleanupInvalidRecords(): Promise<number> {
-  // Find and delete records without a valid apiKeyId
-  const invalidRecords = await db.sales
-    .filter(record => !record.apiKeyId || record.apiKeyId.trim() === '')
-    .toArray();
+export async function cleanupInvalidRecords(
+  onProgress?: DbProgressCallback
+): Promise<number> {
+  onProgress?.('Counting records...', 5);
   
-  if (invalidRecords.length > 0) {
-    const idsToDelete = invalidRecords
-      .map(r => r.id)
-      .filter((id): id is number => id !== undefined);
+  // First get total count for context
+  const totalCount = await db.sales.count();
+  
+  if (totalCount === 0) {
+    onProgress?.('Database ready', 100);
+    return 0;
+  }
+  
+  onProgress?.(`Scanning ${totalCount.toLocaleString()} records...`, 10);
+  
+  // Yield to let UI update
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  // Find invalid records by scanning in batches for progress feedback
+  // We use pagination to allow yielding to the event loop for UI updates
+  const SCAN_BATCH_SIZE = 10000;
+  const invalidIds: number[] = [];
+  let offset = 0;
+  
+  while (offset < totalCount) {
+    const batch = await db.sales.offset(offset).limit(SCAN_BATCH_SIZE).toArray();
     
-    await db.sales.bulkDelete(idsToDelete);
-    console.log(`Cleaned up ${invalidRecords.length} invalid records (missing apiKeyId)`);
+    for (const record of batch) {
+      if (!record.apiKeyId || record.apiKeyId.trim() === '') {
+        if (record.id !== undefined) {
+          invalidIds.push(record.id);
+        }
+      }
+    }
+    
+    offset += batch.length;
+    
+    // Update progress and yield to event loop
+    const scanProgress = 10 + Math.round((offset / totalCount) * 20);
+    onProgress?.(`Scanning... ${offset.toLocaleString()} / ${totalCount.toLocaleString()}`, scanProgress);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    
+    if (batch.length < SCAN_BATCH_SIZE) break;
+  }
+  
+  onProgress?.('Scan complete', 30);
+  
+  if (invalidIds.length > 0) {
+    console.log(`Found ${invalidIds.length} invalid records (missing apiKeyId)`);
+    
+    // Delete in batches with progress
+    const DELETE_BATCH_SIZE = 5000;
+    let deleted = 0;
+    
+    for (let i = 0; i < invalidIds.length; i += DELETE_BATCH_SIZE) {
+      const batch = invalidIds.slice(i, i + DELETE_BATCH_SIZE);
+      await db.sales.bulkDelete(batch);
+      deleted += batch.length;
+      
+      const deleteProgress = 30 + Math.round((deleted / invalidIds.length) * 15);
+      onProgress?.(`Cleaning up... ${deleted.toLocaleString()} / ${invalidIds.length.toLocaleString()}`, deleteProgress);
+      
+      // Yield to let UI update
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    
+    console.log(`Cleaned up ${invalidIds.length} invalid records`);
     
     // Recompute aggregates after cleanup
     const remainingCount = await db.sales.count();
     if (remainingCount > 0) {
-      await computeAndStoreAggregates();
+      onProgress?.('Recomputing aggregates...', 50);
+      await computeAndStoreAggregates((msg, prog) => {
+        // Map aggregate progress (0-100) to our range (50-95)
+        const mappedProgress = 50 + Math.round(prog * 0.45);
+        onProgress?.(msg, mappedProgress);
+      });
     } else {
       await clearAggregates();
     }
   }
   
-  return invalidRecords.length;
+  onProgress?.('Database ready', 100);
+  return invalidIds.length;
 }
 
 /**
  * Initialize the database - should be called on app startup.
  * Performs cleanup of invalid records.
  */
-export async function initializeDatabase(): Promise<{ cleanedRecords: number }> {
-  const cleanedRecords = await cleanupInvalidRecords();
+export async function initializeDatabase(
+  onProgress?: DbProgressCallback
+): Promise<{ cleanedRecords: number }> {
+  onProgress?.('Opening database...', 0);
+  
+  // Ensure database is open
+  await db.open();
+  
+  onProgress?.('Checking database integrity...', 5);
+  const cleanedRecords = await cleanupInvalidRecords(onProgress);
+  
   return { cleanedRecords };
 }
 

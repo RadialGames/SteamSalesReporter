@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import type { FetchProgress } from '$lib/services/types';
+  import { startWindowDrag } from '$lib/utils/tauri';
   
   interface Props {
     progress: FetchProgress & { phase: FetchProgress['phase'] | 'cancelled' };
@@ -10,22 +11,6 @@
   }
 
   let { progress, onCancel, onAbort, onResume }: Props = $props();
-  
-  // Check if running in Tauri
-  const isTauri = '__TAURI_INTERNALS__' in window;
-  
-  async function startWindowDrag(event: MouseEvent) {
-    // Only start drag if clicking directly on the backdrop or header (not on interactive elements)
-    const target = event.target as HTMLElement;
-    if (target.closest('button, a, input, select, .glass-card')) {
-      return;
-    }
-    
-    if (isTauri) {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      await getCurrentWindow().startDragging();
-    }
-  }
   
   let isAborting = $state(false);
   

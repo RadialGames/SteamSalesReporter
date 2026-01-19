@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { SalesRecord } from '$lib/services/types';
   import { formatCurrency, formatNumber } from '$lib/utils/formatters';
-  import { calculateLaunchDays, calculateDayTotals } from '$lib/utils/launch-metrics';
+  import { calculateLaunchDays, calculateDayTotals, type LaunchMetricsResult } from '$lib/utils/launch-metrics';
   import { generateCsv, copyToClipboard as clipboardCopy, downloadFile, sanitizeFilename } from '$lib/utils/csv-export';
 
   interface Props {
@@ -10,12 +10,26 @@
     idLabel?: string;
     records: SalesRecord[];
     maxDays: number;
+    // Pre-computed launch metrics (optional, for performance)
+    launchMetrics?: LaunchMetricsResult;
   }
 
-  let { id, name, idLabel = 'App ID', records, maxDays }: Props = $props();
+  let { id, name, idLabel = 'App ID', records, maxDays, launchMetrics }: Props = $props();
 
-  // Calculate launch day and aggregate data by day offset
-  const tableData = $derived(calculateLaunchDays(records, maxDays));
+  // Use pre-computed metrics if available, otherwise compute (fallback for backwards compatibility)
+  const tableData = $derived.by(() => {
+    if (launchMetrics) {
+      // Use pre-computed metrics, just slice to maxDays
+      const slicedDays = launchMetrics.days.filter(d => d.day < maxDays);
+      return {
+        launchDate: launchMetrics.launchDate,
+        days: slicedDays
+      };
+    }
+    
+    // Fallback: compute from records (slow due to proxy overhead)
+    return calculateLaunchDays(records, maxDays);
+  });
 
   let copyFeedback = $state(false);
 

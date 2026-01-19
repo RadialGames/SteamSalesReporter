@@ -103,6 +103,9 @@ export interface FetchProgress {
 
 export type ProgressCallback = (progress: FetchProgress) => void;
 
+/** Simple progress callback for data operations */
+export type DataProgressCallback = (message: string, progress: number) => void;
+
 export interface FetchParams {
   apiKey: string;
   apiKeyId: string;     // ID of the API key for association
@@ -116,6 +119,7 @@ export interface Filters {
   startDate?: string;
   endDate?: string;
   appIds?: number[];       // Multi-select product filter
+  packageIds?: number[];    // Multi-select package filter
   countryCode?: string;
   apiKeyIds?: string[];    // Multi-select API key source filter
 }
@@ -152,8 +156,8 @@ export interface SalesService {
   setHighwatermark(apiKeyId: string, value: number): Promise<void>;
   
   // Data management
-  clearAllData(): Promise<void>;
-  clearDataForKey(apiKeyId: string): Promise<void>;
+  clearAllData(onProgress?: DataProgressCallback): Promise<void>;
+  clearDataForKey(apiKeyId: string, onProgress?: DataProgressCallback): Promise<void>;
   
   // Helper to get dates already in DB for prioritization
   getExistingDates(apiKeyId: string): Promise<Set<string>>;
