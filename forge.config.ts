@@ -10,6 +10,10 @@ const config: ForgeConfig = {
     name: 'Steam Sales Analyzer',
     executableName: 'steam-sales-analyzer',
     appBundleId: 'com.steamsales.analyzer',
+    // Ad-hoc code signing for local use (no Apple Developer account needed)
+    osxSign: {
+      identity: '-', // Ad-hoc signature
+    },
     // Only include built files and package.json
     ignore: (file) => {
       if (!file) return false;

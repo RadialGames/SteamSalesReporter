@@ -3,37 +3,81 @@
   import ProductLaunchTable from './ProductLaunchTable.svelte';
   import type { SalesRecord } from '$lib/services/types';
 
-  let maxDays = $state(60);
+  let maxDays = $state(2);
   let copyFeedback = $state(false);
+  let groupBy = $state<'appId' | 'packageId'>('appId');
 
-  // Group records by appId and get unique products with their data
-  const productGroups = $derived(() => {
-    const groups = new Map<number, { appId: number; appName: string; records: SalesRecord[]; hasRevenue: boolean }>();
+  // Generic group type for both appId and packageId grouping
+  interface ProductGroup {
+    id: number;
+    name: string;
+    records: SalesRecord[];
+    hasRevenue: boolean;
+  }
+
+  // Group records by appId
+  const appGroups = $derived(() => {
+    const groups = new Map<number, ProductGroup>();
     
     for (const record of $salesStore) {
-      if (!groups.has(record.appId)) {
-        groups.set(record.appId, {
-          appId: record.appId,
-          appName: record.appName || `App ${record.appId}`,
+      const appId = record.appId;
+      if (appId == null) continue; // Skip records without appId
+      
+      if (!groups.has(appId)) {
+        groups.set(appId, {
+          id: appId,
+          name: record.appName || `App ${appId}`,
           records: [],
           hasRevenue: false
         });
       }
       
-      const group = groups.get(record.appId)!;
+      const group = groups.get(appId)!;
       group.records.push(record);
       
-      // Track if this product has any revenue (needed to determine launch date)
       if (record.netSalesUsd && record.netSalesUsd > 0) {
         group.hasRevenue = true;
       }
     }
     
-    // Only include products that have at least one record with revenue (to determine launch date)
-    // Sort by app name
     return Array.from(groups.values())
-      .filter(g => g.hasRevenue)
-      .sort((a, b) => a.appName.localeCompare(b.appName));
+      .filter(g => g.hasRevenue && g.id != null)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  // Group records by packageId
+  const packageGroups = $derived(() => {
+    const groups = new Map<number, ProductGroup>();
+    
+    for (const record of $salesStore) {
+      const pkgId = record.packageid;
+      if (pkgId == null) continue; // Skip records without packageId
+      
+      if (!groups.has(pkgId)) {
+        groups.set(pkgId, {
+          id: pkgId,
+          name: record.packageName || `Package ${pkgId}`,
+          records: [],
+          hasRevenue: false
+        });
+      }
+      
+      const group = groups.get(pkgId)!;
+      group.records.push(record);
+      
+      if (record.netSalesUsd && record.netSalesUsd > 0) {
+        group.hasRevenue = true;
+      }
+    }
+    
+    return Array.from(groups.values())
+      .filter(g => g.hasRevenue && g.id != null)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  // Current active groups based on toggle
+  const productGroups = $derived(() => {
+    return groupBy === 'appId' ? appGroups() : packageGroups();
   });
 
   // Calculate day-by-day data for a single product
@@ -89,15 +133,16 @@
     const products = productGroups();
     if (products.length === 0) return '';
 
-    const headers = ['Product', 'App ID', 'Day', 'Date', 'Units Sold', 'Returns', 'Activations', 'Bundle', 'Net Revenue (USD)'];
+    const idLabel = groupBy === 'appId' ? 'App ID' : 'Package ID';
+    const headers = ['Product', idLabel, 'Day', 'Date', 'Units Sold', 'Returns', 'Activations', 'Bundle', 'Net Revenue (USD)'];
     const rows: string[][] = [];
 
     for (const product of products) {
       const { days } = calculateProductDays(product.records, maxDays);
       for (const day of days) {
         rows.push([
-          `"${product.appName.replace(/"/g, '""')}"`,
-          product.appId.toString(),
+          `"${product.name.replace(/"/g, '""')}"`,
+          product.id.toString(),
           day.day.toString(),
           day.date,
           day.sold.toString(),
@@ -133,7 +178,8 @@
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `kim_style_report_all_products.csv`);
+    const suffix = groupBy === 'appId' ? 'by_app' : 'by_package';
+    link.setAttribute('download', `kim_style_report_${suffix}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -156,6 +202,29 @@
       </div>
       
       <div class="flex flex-wrap items-center gap-4">
+        <!-- Group By Toggle -->
+        <div class="flex items-center gap-2">
+          <span class="text-purple-200 text-sm">Group by:</span>
+          <div class="flex rounded-lg bg-white/10 p-1">
+            <button
+              class="px-3 py-1 rounded-md text-sm transition-colors {groupBy === 'appId' 
+                ? 'bg-purple-500 text-white' 
+                : 'text-purple-300 hover:text-white'}"
+              onclick={() => groupBy = 'appId'}
+            >
+              App ID
+            </button>
+            <button
+              class="px-3 py-1 rounded-md text-sm transition-colors {groupBy === 'packageId' 
+                ? 'bg-purple-500 text-white' 
+                : 'text-purple-300 hover:text-white'}"
+              onclick={() => groupBy = 'packageId'}
+            >
+              Package ID
+            </button>
+          </div>
+        </div>
+        
         <div class="flex items-center gap-2">
           <label for="maxDays" class="text-purple-200 whitespace-nowrap">Days:</label>
           <input
@@ -224,14 +293,15 @@
     </div>
   {:else}
     <div class="text-purple-300 text-sm">
-      Showing {productGroups().length} product{productGroups().length === 1 ? '' : 's'} with revenue data
+      Showing {productGroups().length} {groupBy === 'appId' ? 'app' : 'package'}{productGroups().length === 1 ? '' : 's'} with revenue data
     </div>
     
     <!-- Product Tables -->
-    {#each productGroups() as product (product.appId)}
+    {#each productGroups() as product (product.id)}
       <ProductLaunchTable 
-        appId={product.appId}
-        appName={product.appName}
+        id={product.id}
+        name={product.name}
+        idLabel={groupBy === 'appId' ? 'App ID' : 'Package ID'}
         records={product.records}
         {maxDays}
       />

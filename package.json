@@ -26,6 +26,7 @@
     "@electron-forge/maker-dmg": "^7.11.1",
     "@electron-forge/maker-squirrel": "^7.11.1",
     "@electron-forge/maker-zip": "^7.11.1",
+    "@electron/osx-sign": "^2.3.0",
     "@sveltejs/vite-plugin-svelte": "^6",
     "@tailwindcss/vite": "^4",
     "@tsconfig/svelte": "^5",

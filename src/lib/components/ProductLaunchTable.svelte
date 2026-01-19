@@ -2,13 +2,14 @@
   import type { SalesRecord } from '$lib/services/types';
 
   interface Props {
-    appId: number;
-    appName: string;
+    id: number;
+    name: string;
+    idLabel?: string;
     records: SalesRecord[];
     maxDays: number;
   }
 
-  let { appId, appName, records, maxDays }: Props = $props();
+  let { id, name, idLabel = 'App ID', records, maxDays }: Props = $props();
 
   interface DayData {
     day: number;
@@ -132,7 +133,7 @@
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `${appName.replace(/[^a-z0-9]/gi, '_')}_launch_report.csv`);
+    link.setAttribute('download', `${name.replace(/[^a-z0-9]/gi, '_')}_launch_report.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -161,10 +162,10 @@
     <div>
       <h3 class="text-lg font-bold font-['Fredoka'] flex items-center gap-2">
         <span class="text-xl">&#127918;</span>
-        {appName}
+        {name}
       </h3>
       <p class="text-sm text-purple-300">
-        App ID: {appId}
+        {idLabel}: {id}
         {#if tableData().launchDate}
           <span class="mx-2">|</span>
           Launch: {tableData().launchDate}
