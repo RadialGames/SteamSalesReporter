@@ -13,24 +13,135 @@ export class SyncCancelledError extends Error {
 }
 
 /**
- * Make a request to the Steam Partner API via Vite proxy
+ * Check if an error is retryable (network error, timeout, or 5xx server error)
+ */
+function isRetryableError(error: unknown, status?: number): boolean {
+  // Network errors (TypeError from fetch) are retryable
+  if (error instanceof TypeError) {
+    return true;
+  }
+
+  // 5xx server errors are retryable
+  if (status && status >= 500 && status < 600) {
+    return true;
+  }
+
+  // 429 (Too Many Requests) is retryable
+  if (status === 429) {
+    return true;
+  }
+
+  // 408 (Request Timeout) is retryable
+  if (status === 408) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Sleep for a given number of milliseconds
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Make a request to the Steam Partner API via Vite proxy with retry logic
+ * Retries up to 3 times on network errors, timeouts, and 5xx errors with exponential backoff
  */
 export async function fetchFromSteamApi<T>(
   endpoint: string,
   params: Record<string, string>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  maxRetries: number = 3
 ): Promise<T> {
   const queryString = new URLSearchParams(params).toString();
   // Note: partner.steam-api.com doesn't use /webapi/ prefix
   const url = `/api/steam/${endpoint}?${queryString}`;
 
-  const response = await fetch(url, { signal });
+  let lastError: Error | null = null;
+  let lastStatus: number | undefined;
 
-  if (!response.ok) {
-    throw new Error(`Steam API error: ${response.status} ${response.statusText}`);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Check if cancelled before each attempt
+    if (signal?.aborted) {
+      throw new SyncCancelledError();
+    }
+
+    try {
+      const response = await fetch(url, { signal });
+
+      // Check if response is ok
+      if (!response.ok) {
+        lastStatus = response.status;
+        const error = new Error(`Steam API error: ${response.status} ${response.statusText}`);
+
+        // Don't retry on 4xx client errors (except 429 Too Many Requests)
+        // These are thrown immediately without retry
+        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+          throw error;
+        }
+
+        // For all other errors (including retryable ones), throw to trigger retry logic
+        throw error;
+      } else {
+        // Success - return parsed JSON
+        return await response.json();
+      }
+    } catch (error) {
+      // Check if this was a cancellation
+      if (error instanceof SyncCancelledError || signal?.aborted) {
+        throw new SyncCancelledError();
+      }
+
+      // Check if this is a retryable error
+      if (isRetryableError(error, lastStatus)) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // Log retry attempt
+        const errorType = error instanceof TypeError ? 'Network Error' : `HTTP ${lastStatus}`;
+        const endpointName = endpoint.split('/').pop() || endpoint;
+        console.warn(
+          `[Retry] ${errorType} on ${endpointName} (attempt ${attempt + 1}/${maxRetries + 1})`,
+          {
+            endpoint,
+            status: lastStatus,
+            error: error instanceof Error ? error.message : String(error),
+            params: Object.keys(params).reduce(
+              (acc, key) => {
+                // Don't log the full API key, just indicate it's present
+                acc[key] = key === 'key' ? '[REDACTED]' : params[key];
+                return acc;
+              },
+              {} as Record<string, string>
+            ),
+          }
+        );
+
+        // If we have retries left, wait with exponential backoff
+        if (attempt < maxRetries) {
+          // Exponential backoff: 1s, 2s, 4s
+          const delayMs = Math.pow(2, attempt) * 1000;
+          console.log(`[Retry] Waiting ${delayMs}ms before retry...`);
+          await sleep(delayMs);
+          continue;
+        } else {
+          console.error(`[Retry] Exhausted all ${maxRetries + 1} attempts for ${endpointName}`, {
+            endpoint,
+            status: lastStatus,
+            finalError: lastError.message,
+          });
+        }
+      }
+
+      // Not retryable or out of retries - throw the error
+      throw error instanceof Error ? error : new Error(String(error));
+    }
   }
 
-  return response.json();
+  // Should never reach here, but TypeScript needs this
+  throw lastError || new Error('Request failed after retries');
 }
 
 /**
@@ -210,7 +321,6 @@ export async function fetchSalesForDate(
     hasMore = maxId > pageHighwatermark && results.length > 0;
     pageHighwatermark = maxId;
   }
-
   return dateSales;
 }
 

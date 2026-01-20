@@ -13,12 +13,7 @@
   } from '$lib/db/dexie';
   import { salesStore, settingsStore, isLoading, errorMessage } from '$lib/stores/sales';
   import type { ApiKeyInfo } from '$lib/services/types';
-  import {
-    runSync,
-    resumeSync,
-    hasPendingTasks,
-    isCancellationError,
-  } from '$lib/services/sync-orchestrator';
+  import { SyncOrchestrator, isCancellationError } from '$lib/services/sync-orchestrator';
 
   let showApiKeyModal = $state(false);
   let showProgressModal = $state(false);
@@ -75,7 +70,8 @@
     }
 
     // Check if there are pending tasks from a previous incomplete sync
-    hasPendingWork = await hasPendingTasks();
+    const orchestrator = new SyncOrchestrator(services, syncTaskService, 100);
+    hasPendingWork = await orchestrator.hasPendingTasks();
     if (hasPendingWork) {
       console.log('Found pending sync tasks from previous session');
     }
@@ -169,8 +165,16 @@
     errorMessage.set(null);
 
     try {
+      // Create orchestrator with batch size of 100
+      // Note: Each task makes HTTP requests. With HTTP/2, we can handle many concurrent
+      // requests. Port exhaustion is not a concern as browsers manage connection pooling.
+      // Failed requests will be retried up to 3 times with exponential backoff.
+      const orchestrator = new SyncOrchestrator(services, syncTaskService, 100);
+
       // Use resumeSync if we have pending work, otherwise runSync for fresh start
-      const syncFn = isResuming ? resumeSync : runSync;
+      const syncFn = isResuming
+        ? orchestrator.resumeSync.bind(orchestrator)
+        : orchestrator.runSync.bind(orchestrator);
 
       const { totalRecords, totalTasks } = await syncFn(apiKeys, {
         onProgress: (progress) => {
@@ -204,7 +208,8 @@
         salesStore.setData(allData);
 
         // Check if there's still pending work
-        hasPendingWork = await hasPendingTasks();
+        const orchestrator = new SyncOrchestrator(services, syncTaskService, 10);
+        hasPendingWork = await orchestrator.hasPendingTasks();
 
         refreshProgress = {
           phase: 'cancelled',

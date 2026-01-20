@@ -15,16 +15,14 @@
   let isAborting = $state(false);
 
   // Time estimation configuration
-  const ROLLING_WINDOW_SIZE = 15; // Track last N completion times
-  const SMOOTHING_FACTOR = 0.25; // How much to weight new estimates (0-1, lower = smoother)
-  const MIN_SAMPLES_FOR_ESTIMATE = 3; // Minimum items before showing estimate
-  const TIME_DECAY_PER_SECOND = 1000; // How much to subtract from estimate per second of real time
+  const MIN_ITEMS_FOR_ESTIMATE = 10; // Minimum items completed before showing estimate
+  const MIN_ELAPSED_MS = 5000; // Minimum 5 seconds elapsed before showing estimate
+  const SMOOTHING_FACTOR = 0.2; // How much to weight new estimates (0-1, lower = smoother)
 
-  // Time estimation state
-  let itemCompletionTimes = $state<number[]>([]); // Timestamps when items completed
-  let lastItemCount = $state(0); // Track previous count to detect new completions
+  // Time estimation state - track overall sync progress
+  let populateStartTime = $state<number | null>(null); // When populate phase started
+  let lastItemCount = $state(0); // Track previous count to detect phase start
   let smoothedEstimateMs = $state<number | null>(null); // Smoothed estimate for display stability
-  let lastUpdateTime = $state<number | null>(null); // When we last updated the smoothed estimate
   let currentTime = $state(Date.now());
 
   // Update current time every second for ETA calculation
@@ -69,67 +67,65 @@
 
       // Reset when sync completes, is cancelled, or errors
       if (phase === 'complete' || phase === 'cancelled' || phase === 'error') {
-        itemCompletionTimes = [];
+        populateStartTime = null;
         lastItemCount = 0;
         smoothedEstimateMs = null;
-        lastUpdateTime = null;
         return;
       }
 
       // Reset if we're starting fresh (current dropped to 0 or lower than last)
       if (current < lastItemCount) {
-        itemCompletionTimes = [];
+        populateStartTime = null;
         lastItemCount = 0;
         smoothedEstimateMs = null;
-        lastUpdateTime = null;
       }
 
-      // Track new completions during populate phase
-      if (isPopulatePhase && current > lastItemCount) {
-        const now = Date.now();
-        const newCompletions = current - lastItemCount;
-
-        // Add timestamps for each new completion
-        for (let i = 0; i < newCompletions; i++) {
-          itemCompletionTimes.push(now);
+      // Track when populate phase starts
+      if (isPopulatePhase) {
+        // Set start time when we first enter populate phase
+        if (populateStartTime === null) {
+          populateStartTime = Date.now();
         }
-
-        // Keep only the rolling window
-        if (itemCompletionTimes.length > ROLLING_WINDOW_SIZE) {
-          itemCompletionTimes = itemCompletionTimes.slice(-ROLLING_WINDOW_SIZE);
-        }
-
         lastItemCount = current;
+      } else {
+        // Not in populate phase - clear start time
+        populateStartTime = null;
       }
     });
   });
 
-  // Calculate raw estimate from rolling window (pure calculation)
+  // Calculate raw estimate based on overall sync progress
   let rawEstimateMs = $derived.by(() => {
     const isPopulatePhase = progress.phase === 'populate';
 
-    if (!isPopulatePhase || itemCompletionTimes.length < MIN_SAMPLES_FOR_ESTIMATE) {
+    if (!isPopulatePhase || populateStartTime === null) {
       return null;
     }
 
     const remaining = totalCount - currentCount;
     if (remaining <= 0) return null;
 
-    // Calculate average time per item from rolling window
-    const windowSize = itemCompletionTimes.length;
-    const oldestTime = itemCompletionTimes[0];
-    const newestTime = itemCompletionTimes[windowSize - 1];
-    const windowDuration = newestTime - oldestTime;
-
-    // Need at least 2 samples to calculate duration between them
-    if (windowSize < 2 || windowDuration <= 0) {
+    // Need minimum progress before showing estimate
+    if (currentCount < MIN_ITEMS_FOR_ESTIMATE) {
       return null;
     }
 
-    // Average time per item = window duration / (items in window - 1)
-    // We subtract 1 because N timestamps represent N-1 intervals
-    const avgTimePerItem = windowDuration / (windowSize - 1);
-    return avgTimePerItem * remaining;
+    const now = Date.now();
+    const elapsedMs = now - populateStartTime;
+
+    // Need minimum elapsed time before showing estimate
+    if (elapsedMs < MIN_ELAPSED_MS) {
+      return null;
+    }
+
+    // Calculate overall completion rate from start of sync
+    // This gives a stable estimate based on total progress
+    const itemsPerMs = currentCount / elapsedMs;
+
+    // Estimate remaining time: remaining items / rate
+    const estimateMs = remaining / itemsPerMs;
+
+    return estimateMs;
   });
 
   // Update smoothed estimate when raw estimate changes
@@ -140,42 +136,29 @@
       return;
     }
 
-    const now = Date.now();
-
     // Use untrack to read state without creating circular dependency
     untrack(() => {
-      if (smoothedEstimateMs === null || lastUpdateTime === null) {
+      if (smoothedEstimateMs === null) {
         // First estimate - use raw value
         smoothedEstimateMs = raw;
-        lastUpdateTime = now;
       } else {
-        // Account for time that has passed since last update
-        const elapsed = now - lastUpdateTime;
-        const decayedPrevious = Math.max(0, smoothedEstimateMs - elapsed);
-
-        // Blend new estimate with decayed previous value
-        smoothedEstimateMs = SMOOTHING_FACTOR * raw + (1 - SMOOTHING_FACTOR) * decayedPrevious;
-        lastUpdateTime = now;
+        // Exponential moving average for smooth, stable estimates
+        // Lower SMOOTHING_FACTOR = more stable but slower to react
+        smoothedEstimateMs = SMOOTHING_FACTOR * raw + (1 - SMOOTHING_FACTOR) * smoothedEstimateMs;
       }
     });
   });
 
-  // Decay the estimate over time even when no new items complete
+  // Decay the estimate over time to account for elapsed time
   $effect(() => {
     // This effect runs every time currentTime updates (every second)
     currentTime; // Subscribe to currentTime changes
 
     // Use untrack to read/write state without creating circular dependency
     untrack(() => {
-      if (smoothedEstimateMs !== null && lastUpdateTime !== null) {
-        const now = Date.now();
-        const elapsed = now - lastUpdateTime;
-
-        // Only decay if we haven't had a recent update (to avoid double-decay)
-        if (elapsed > 500) {
-          smoothedEstimateMs = Math.max(0, smoothedEstimateMs - TIME_DECAY_PER_SECOND);
-          lastUpdateTime = now;
-        }
+      if (smoothedEstimateMs !== null && smoothedEstimateMs > 0) {
+        // Subtract 1 second from estimate each second (natural countdown)
+        smoothedEstimateMs = Math.max(0, smoothedEstimateMs - 1000);
       }
     });
   });

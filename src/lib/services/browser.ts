@@ -262,30 +262,31 @@ export const browserServices: SalesService = {
 export const browserSyncTaskService: SyncTaskService = {
   async createSyncTasks(apiKeyId: string, dates: string[]): Promise<void> {
     const now = Date.now();
-    const tasks: SyncTask[] = [];
+    const datesSet = new Set(dates);
 
-    for (const date of dates) {
-      const taskId = createTaskId(apiKeyId, date);
+    // OPTIMIZATION: Instead of O(n) queries (one per date), do a single query
+    // to find all records for this apiKeyId, then filter by dates in memory
 
-      // Delete existing sales data for this date and api key
-      // Filter by apiKeyId first (indexed), then filter by date
-      const recordsToDelete = await db.sales
-        .where('apiKeyId')
-        .equals(apiKeyId)
-        .filter((r) => r.date === date)
-        .primaryKeys();
-      if (recordsToDelete.length > 0) {
-        await db.sales.bulkDelete(recordsToDelete as string[]);
-      }
+    // Single query to get all records for this API key that match any of the dates
+    const recordsToDelete = await db.sales
+      .where('apiKeyId')
+      .equals(apiKeyId)
+      .filter((r) => datesSet.has(r.date))
+      .primaryKeys();
 
-      tasks.push({
-        id: taskId,
-        apiKeyId,
-        date,
-        status: 'todo',
-        createdAt: now,
-      });
+    // Bulk delete all matching records in one operation
+    if (recordsToDelete.length > 0) {
+      await db.sales.bulkDelete(recordsToDelete as string[]);
     }
+
+    // Build all tasks at once (no async operations needed)
+    const tasks: SyncTask[] = dates.map((date) => ({
+      id: createTaskId(apiKeyId, date),
+      apiKeyId,
+      date,
+      status: 'todo' as const,
+      createdAt: now,
+    }));
 
     // Bulk put will overwrite existing tasks with same ID
     if (tasks.length > 0) {

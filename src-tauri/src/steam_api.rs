@@ -39,7 +39,7 @@ fn generate_unique_key(record: &SalesRecord) -> String {
 }
 
 const STEAM_API_BASE: &str = "https://partner.steamgames.com/webapi";
-const PARALLEL_BATCH_SIZE: usize = 3;
+const PARALLEL_BATCH_SIZE: usize = 10;
 
 #[derive(Error, Debug)]
 pub enum SteamApiError {

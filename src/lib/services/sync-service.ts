@@ -11,7 +11,7 @@ import { getHighwatermark } from './api-key-storage';
 export { SyncCancelledError };
 
 // Number of dates to fetch in parallel (be respectful to Steam's servers)
-const PARALLEL_BATCH_SIZE = 3;
+const PARALLEL_BATCH_SIZE = 10;
 
 /**
  * Save sales records with automatic overwrite support.
