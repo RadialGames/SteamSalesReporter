@@ -71,3 +71,26 @@ export function applyFiltersExcluding(
   }
   return applyFilters(records, filteredFilters);
 }
+
+/**
+ * Convert filterStore (Svelte store) value to Filters type for database queries.
+ * This ensures consistent field extraction when passing filters to database functions.
+ *
+ * @param filterStoreValue - The value from $filterStore (already Filters type, but this makes intent explicit)
+ * @returns Filters object with all filter fields
+ *
+ * @example
+ * const filters = $filterStore;
+ * const dbFilters = filterStoreToFilters(filters);
+ * const result = await getParsedRecords(page, pageSize, dbFilters);
+ */
+export function filterStoreToFilters(filterStoreValue: Filters): Filters {
+  return {
+    appIds: filterStoreValue.appIds,
+    packageIds: filterStoreValue.packageIds,
+    countryCode: filterStoreValue.countryCode,
+    startDate: filterStoreValue.startDate,
+    endDate: filterStoreValue.endDate,
+    apiKeyIds: filterStoreValue.apiKeyIds,
+  };
+}

@@ -1,31 +1,20 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import {
-    Chart,
-    LineController,
-    CategoryScale,
-    LinearScale,
-    PointElement,
-    LineElement,
-    Title,
-    Tooltip,
-    Legend,
-    Filler,
-  } from 'chart.js';
-  import { dailySummary, salesStore } from '$lib/stores/sales';
+  import { onMount } from 'svelte';
+  import { Chart } from 'chart.js';
+  import { getDisplayCache } from '$lib/db/display-cache';
   import { ToggleGroup } from './ui';
+  import { registerChartComponents, commonChartOptions } from '$lib/utils/charts';
+  import { useChartLifecycle } from '$lib/utils/chart-lifecycle.svelte';
+  import EmptyState from './ui/EmptyState.svelte';
 
-  Chart.register(
-    LineController,
-    CategoryScale,
-    LinearScale,
-    PointElement,
-    LineElement,
-    Title,
-    Tooltip,
-    Legend,
-    Filler
-  );
+  interface ChartDataPoint {
+    date: string;
+    revenue: number;
+    units: number;
+  }
+
+  // Register chart components
+  registerChartComponents();
 
   interface Props {
     filterPreLaunch?: boolean; // Filter out data points before first sale (launch day)
@@ -33,66 +22,59 @@
 
   let { filterPreLaunch = false }: Props = $props();
 
-  let canvas: HTMLCanvasElement = $state.raw(null!);
-  let chart: Chart | null = null;
+  // Chart data from display cache
+  let chartData = $state<ChartDataPoint[]>([]);
 
   // Toggle states
   let showRevenue = $state(true); // true = revenue, false = units
   let isCumulative = $state(false);
 
-  function createChart() {
-    if (!canvas) return;
+  // Load chart data from display cache
+  onMount(async () => {
+    const cached = await getDisplayCache<ChartDataPoint[]>('revenue_chart_data');
+    if (cached) {
+      chartData = cached;
+    }
+  });
+
+  function createChart(canvas: HTMLCanvasElement): Chart {
     const ctx = canvas;
 
-    // Destroy existing chart
-    if (chart) {
-      chart.destroy();
-    }
-
-    let rawData = $dailySummary;
+    let rawData = chartData;
 
     // Filter out data points before the first sale (launch day)
     // This removes activations (free developer copies, press releases) that occur before launch
-    // Uses the same logic as calculateLaunchDays in launch-metrics.ts
     if (filterPreLaunch && rawData.length > 0) {
-      // Find launch day: earliest date with netSalesUsd > 0
-      // This matches the logic in calculateLaunchDays
-      const sales = $salesStore;
-      let launchDate: string | null = null;
+      // Find launch day: earliest date with revenue > 0
       let launchTime = Infinity;
-
-      for (let i = 0; i < sales.length; i++) {
-        const record = sales[i];
-        if (record.netSalesUsd && record.netSalesUsd > 0) {
-          const ts = new Date(record.date).getTime();
+      for (const point of rawData) {
+        if (point.revenue > 0) {
+          const ts = new Date(point.date).getTime();
           if (ts < launchTime) {
             launchTime = ts;
-            launchDate = record.date;
           }
         }
       }
 
-      if (launchDate) {
-        // Filter dailySummary to only include dates >= launch date
-        // This ensures we start from the launch day, excluding pre-launch activations
+      if (launchTime !== Infinity) {
+        // Filter to only include dates >= launch date
         rawData = rawData.filter((d) => {
           const dateTime = new Date(d.date).getTime();
           return dateTime >= launchTime;
         });
       }
-      // If no launchDate found, there's no revenue data, so show all data
     }
 
     // Calculate cumulative data if needed
-    let chartData: number[];
+    let chartDataValues: number[];
     if (isCumulative) {
       let cumulative = 0;
-      chartData = rawData.map((d) => {
-        cumulative += showRevenue ? d.totalRevenue : d.totalUnits;
+      chartDataValues = rawData.map((d) => {
+        cumulative += showRevenue ? d.revenue : d.units;
         return cumulative;
       });
     } else {
-      chartData = rawData.map((d) => (showRevenue ? d.totalRevenue : d.totalUnits));
+      chartDataValues = rawData.map((d) => (showRevenue ? d.revenue : d.units));
     }
 
     const label = showRevenue
@@ -106,14 +88,14 @@
     const color = showRevenue ? 'rgba(168, 85, 247, 1)' : 'rgba(255, 107, 107, 1)';
     const bgColor = showRevenue ? 'rgba(168, 85, 247, 0.2)' : 'rgba(255, 107, 107, 0.2)';
 
-    chart = new Chart(ctx, {
+    return new Chart(ctx, {
       type: 'line',
       data: {
         labels: rawData.map((d) => d.date),
         datasets: [
           {
             label,
-            data: chartData,
+            data: chartDataValues,
             borderColor: color,
             backgroundColor: bgColor,
             fill: true,
@@ -134,16 +116,12 @@
           intersect: false,
         },
         plugins: {
+          ...commonChartOptions.plugins,
           legend: {
             display: false,
           },
           tooltip: {
-            backgroundColor: 'rgba(88, 28, 135, 0.9)',
-            titleColor: '#fff',
-            bodyColor: '#fff',
-            borderColor: 'rgba(168, 85, 247, 0.5)',
-            borderWidth: 1,
-            padding: 12,
+            ...commonChartOptions.plugins.tooltip,
             displayColors: true,
             callbacks: {
               label: function (context) {
@@ -192,27 +170,12 @@
     });
   }
 
-  onMount(() => {
-    createChart();
-  });
-
-  onDestroy(() => {
-    if (chart) {
-      chart.destroy();
-    }
-  });
-
-  // Recreate chart when data or toggles change
-  $effect(() => {
-    $dailySummary;
-    $salesStore; // Also watch salesStore for filterPreLaunch logic
-    showRevenue;
-    isCumulative;
-    filterPreLaunch;
-    if (canvas) {
-      createChart();
-    }
-  });
+  const { setCanvas } = useChartLifecycle(createChart, () => [
+    chartData,
+    showRevenue,
+    isCumulative,
+    filterPreLaunch,
+  ]);
 </script>
 
 <div class="chart-container">
@@ -247,15 +210,14 @@
     </div>
   </div>
 
-  {#if $dailySummary.length === 0}
-    <div class="flex flex-col items-center justify-center h-64 text-purple-300">
-      <span class="text-4xl mb-2">&#128202;</span>
-      <p>No data to display yet</p>
-      <p class="text-sm">Click "Refresh Data" to fetch your sales data</p>
-    </div>
+  {#if chartData.length === 0}
+    <EmptyState
+      title="No data to display yet"
+      message="Click 'Refresh Data' to fetch your sales data"
+    />
   {:else}
     <div class="h-80">
-      <canvas bind:this={canvas}></canvas>
+      <canvas use:setCanvas></canvas>
     </div>
   {/if}
 </div>

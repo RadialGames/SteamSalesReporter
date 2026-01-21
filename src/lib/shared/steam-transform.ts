@@ -2,6 +2,7 @@
 // Used by both browser and tauri service implementations
 
 import type { SalesRecord, SteamDetailedSalesResponse, SteamSaleItem } from '$lib/services/types';
+import { calculateNetUnitsFromValues } from '$lib/utils/calculations';
 
 /**
  * Lookup maps built from Steam API response info arrays
@@ -90,12 +91,36 @@ export function transformSaleItem(
   apiKeyId: string,
   maps: LookupMaps
 ): SalesRecord {
+  // Validate required fields
+  if (!item.date) {
+    throw new Error(`Steam API item missing required field 'date': ${JSON.stringify(item)}`);
+  }
+  if (!item.country_code) {
+    throw new Error(
+      `Steam API item missing required field 'country_code': ${JSON.stringify(item)}`
+    );
+  }
+  if (!item.line_item_type) {
+    throw new Error(
+      `Steam API item missing required field 'line_item_type': ${JSON.stringify(item)}`
+    );
+  }
+  if (!item.partnerid) {
+    throw new Error(`Steam API item missing required field 'partnerid': ${JSON.stringify(item)}`);
+  }
+
   const primaryAppid = item.primary_appid || item.appid || 0;
   const grossSalesUsd = parseFloat(item.gross_sales_usd || '0');
   const grossReturnsUsd = parseFloat(item.gross_returns_usd || '0');
   const netSalesUsd = parseFloat(item.net_sales_usd || '0');
   const netTaxUsd = parseFloat(item.net_tax_usd || '0');
-  const unitsSold = item.net_units_sold ?? item.gross_units_sold ?? item.gross_units_activated ?? 0;
+
+  // Calculate net units using centralized formula
+  // All fields are stored independently for display purposes
+  const grossSold = item.gross_units_sold ?? 0;
+  const grossActivated = item.gross_units_activated ?? 0;
+  const grossReturned = item.gross_units_returned ?? 0;
+  const unitsSold = calculateNetUnitsFromValues(grossSold, grossActivated, grossReturned);
 
   // Get lookup data
   const countryInfo = maps.countryInfoMap.get(item.country_code);
@@ -174,6 +199,11 @@ export function transformSaleItem(
   // This ensures records with the same identifying fields will overwrite each other
   record.id = generateUniqueKey(record);
 
+  // Validate that we generated a valid ID
+  if (!record.id || record.id.trim() === '') {
+    throw new Error(`Generated invalid ID for record: ${JSON.stringify(record)}`);
+  }
+
   return record;
 }
 
@@ -221,6 +251,17 @@ export function parseMaxId(maxId: string | undefined): number {
  * Format: Uses a delimiter-separated format that's deterministic and readable.
  */
 export function generateUniqueKey(record: SalesRecord): string {
+  // Validate required fields for key generation
+  if (!record.date) {
+    throw new Error(`Record missing required field 'date' for key generation`);
+  }
+  if (!record.countryCode) {
+    throw new Error(`Record missing required field 'countryCode' for key generation`);
+  }
+  if (!record.apiKeyId) {
+    throw new Error(`Record missing required field 'apiKeyId' for key generation`);
+  }
+
   // Build a deterministic string from all unique identifying fields
   // Order matters for consistency - always use the same order
   const parts: string[] = [];

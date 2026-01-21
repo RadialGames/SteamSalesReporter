@@ -3,6 +3,7 @@
 
 import type { SalesRecord, Filters } from '$lib/services/types';
 import { applyFilters, applyFiltersExcluding } from '$lib/utils/filters';
+import { calculateNetUnitsFromRecord, sumGrossRevenue } from '$lib/utils/calculations';
 
 // Message types
 interface ComputeGroupsMessage {
@@ -62,7 +63,7 @@ function computeGroups(
     const group = groups.get(id)!;
     group.records.push(record);
 
-    if (record.netSalesUsd && record.netSalesUsd > 0) {
+    if (record.grossSalesUsd && record.grossSalesUsd > 0) {
       group.hasRevenue = true;
     }
 
@@ -100,7 +101,7 @@ function computeAggregates(records: SalesRecord[], filters: Filters) {
       totalRevenue: 0,
       totalUnits: 0,
     };
-    existing.totalRevenue += sale.netSalesUsd ?? 0;
+    existing.totalRevenue += sale.grossSalesUsd ?? 0;
     existing.totalUnits += sale.unitsSold;
     byDate.set(sale.date, existing);
   }
@@ -119,7 +120,7 @@ function computeAggregates(records: SalesRecord[], filters: Filters) {
       totalRevenue: 0,
       totalUnits: 0,
     };
-    existing.totalRevenue += sale.netSalesUsd ?? 0;
+    existing.totalRevenue += sale.grossSalesUsd ?? 0;
     existing.totalUnits += sale.unitsSold;
     if (sale.appName) existing.appName = sale.appName;
     byApp.set(sale.appId, existing);
@@ -138,7 +139,7 @@ function computeAggregates(records: SalesRecord[], filters: Filters) {
       totalRevenue: 0,
       totalUnits: 0,
     };
-    existing.totalRevenue += sale.netSalesUsd ?? 0;
+    existing.totalRevenue += sale.grossSalesUsd ?? 0;
     existing.totalUnits += sale.unitsSold;
     byCountry.set(sale.countryCode, existing);
   }
@@ -146,10 +147,10 @@ function computeAggregates(records: SalesRecord[], filters: Filters) {
     (a, b) => b.totalRevenue - a.totalRevenue
   );
 
-  // Total stats
+  // Total stats using centralized calculations
   const totalStats = {
-    totalRevenue: filtered.reduce((sum, s) => sum + (s.netSalesUsd ?? 0), 0),
-    totalUnits: filtered.reduce((sum, s) => sum + s.unitsSold, 0),
+    totalRevenue: sumGrossRevenue(filtered),
+    totalUnits: filtered.reduce((sum, s) => sum + calculateNetUnitsFromRecord(s), 0),
     totalRecords: filtered.length,
     uniqueApps: new Set(filtered.map((s) => s.appId)).size,
     uniqueCountries: new Set(filtered.map((s) => s.countryCode)).size,
@@ -170,11 +171,27 @@ self.onmessage = (event: MessageEvent<WorkerMessage & { id?: string }>) => {
   try {
     switch (type) {
       case 'computeGroups': {
+        // Validate data
+        if (!Array.isArray(data.records)) {
+          throw new Error('records is not an array');
+        }
+        if (typeof data.mode !== 'string' || !['appId', 'packageId'].includes(data.mode)) {
+          throw new Error('invalid mode: ' + data.mode);
+        }
+
         const result = computeGroups(data.records, data.mode, id);
         self.postMessage({ type: 'groupsResult', data: result, id });
         break;
       }
       case 'computeAggregates': {
+        // Validate data
+        if (!Array.isArray(data.records)) {
+          throw new Error('records is not an array');
+        }
+        if (!data.filters || typeof data.filters !== 'object') {
+          throw new Error('filters is not an object');
+        }
+
         const result = computeAggregates(data.records, data.filters);
         self.postMessage({ type: 'aggregatesResult', data: result, id });
         break;
@@ -183,9 +200,10 @@ self.onmessage = (event: MessageEvent<WorkerMessage & { id?: string }>) => {
         console.warn('Unknown message type:', type);
     }
   } catch (error) {
+    console.error('Worker error:', error);
     self.postMessage({
       type: 'error',
-      error: error instanceof Error ? error.message : 'Unknown error',
+      error: error instanceof Error ? error.message : String(error),
       id,
     });
   }

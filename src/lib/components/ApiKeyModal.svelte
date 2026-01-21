@@ -30,7 +30,9 @@
   let editingName = $state('');
 
   // Delete/Wipe confirmation
-  let confirmAction = $state<{ type: 'delete' | 'wipe'; keyId: string } | null>(null);
+  let confirmAction = $state<
+    { type: 'delete'; keyId: string } | { type: 'wipeAll' } | { type: 'wipeProcessed' } | null
+  >(null);
   let isProcessing = $state(false);
 
   // Wipe progress modal
@@ -200,20 +202,17 @@
     editingName = '';
   }
 
-  async function handleWipeData(keyId: string) {
-    // Find the key name for display
-    const keyInfo = apiKeys.find((k) => k.id === keyId);
-    wipeKeyName = keyInfo?.displayName || `Key ...${keyInfo?.keyHash || ''}`;
-
+  async function handleWipeAllData() {
     // Close confirmation and show progress modal
     confirmAction = null;
     showWipeProgress = true;
-    wipeProgressMessage = 'Preparing to wipe data...';
+    wipeProgressMessage = 'Preparing to wipe all data...';
     wipeProgressPercent = 0;
+    wipeKeyName = 'All Data';
     isProcessing = true;
 
     try {
-      await services.clearDataForKey(keyId, (message, progress) => {
+      await services.clearAllData((message, progress) => {
         wipeProgressMessage = message;
         wipeProgressPercent = progress;
       });
@@ -226,9 +225,40 @@
       showWipeProgress = false;
       onkeyschanged?.();
     } catch (err) {
-      console.error('Error wiping data:', err);
+      console.error('Error wiping all data:', err);
       showWipeProgress = false;
-      error = err instanceof Error ? err.message : 'Failed to wipe data';
+      error = err instanceof Error ? err.message : 'Failed to wipe all data';
+    } finally {
+      isProcessing = false;
+    }
+  }
+
+  async function handleWipeProcessedData() {
+    // Close confirmation and show progress modal
+    confirmAction = null;
+    showWipeProgress = true;
+    wipeProgressMessage = 'Preparing to wipe processed data...';
+    wipeProgressPercent = 0;
+    wipeKeyName = 'Processed Data';
+    isProcessing = true;
+
+    try {
+      await services.clearProcessedData((message, progress) => {
+        wipeProgressMessage = message;
+        wipeProgressPercent = progress;
+      });
+
+      // Brief pause to show completion
+      wipeProgressMessage = 'Complete!';
+      wipeProgressPercent = 100;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      showWipeProgress = false;
+      onkeyschanged?.();
+    } catch (err) {
+      console.error('Error wiping processed data:', err);
+      showWipeProgress = false;
+      error = err instanceof Error ? err.message : 'Failed to wipe processed data';
     } finally {
       isProcessing = false;
     }
@@ -397,14 +427,6 @@
                   <div class="flex items-center gap-2">
                     <button
                       type="button"
-                      class="px-3 py-1.5 bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/50 text-orange-300 rounded text-xs transition-colors"
-                      onclick={() => (confirmAction = { type: 'wipe', keyId: key.id })}
-                      title="Wipe data from this key"
-                    >
-                      &#128465; Wipe Data
-                    </button>
-                    <button
-                      type="button"
                       class="px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 border border-red-500/50 text-red-300 rounded text-xs transition-colors"
                       onclick={() => (confirmAction = { type: 'delete', keyId: key.id })}
                       title="Delete this key"
@@ -415,41 +437,28 @@
                 </div>
 
                 <!-- Confirmation Dialog -->
-                {#if confirmAction?.keyId === key.id}
+                {#if confirmAction && confirmAction.type === 'delete' && confirmAction.keyId === key.id}
                   <div class="mt-4 pt-4 border-t border-white/10">
                     <div class="bg-red-500/20 border border-red-500/50 rounded-lg p-4">
-                      {#if confirmAction.type === 'wipe'}
-                        <p class="text-sm text-red-200 mb-3">
-                          <strong>Wipe all data</strong> from this API key?
-                        </p>
-                        <p class="text-xs text-red-300 mb-4">
-                          This will delete all sales records associated with this key. The key
-                          itself will remain.
-                        </p>
-                      {:else}
-                        <p class="text-sm text-red-200 mb-3">
-                          <strong>Delete this API key?</strong>
-                        </p>
-                        <p class="text-xs text-red-300 mb-4">
-                          This will delete the key and all its associated sales data. This action
-                          cannot be undone.
-                        </p>
-                      {/if}
+                      <p class="text-sm text-red-200 mb-3">
+                        <strong>Delete this API key?</strong>
+                      </p>
+                      <p class="text-xs text-red-300 mb-4">
+                        This will delete the key and all its associated sales data. This action
+                        cannot be undone.
+                      </p>
                       <div class="flex gap-2">
                         <button
                           type="button"
                           class="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold text-sm transition-colors disabled:opacity-50"
-                          onclick={() =>
-                            confirmAction?.type === 'wipe'
-                              ? handleWipeData(key.id)
-                              : handleDeleteKey(key.id)}
+                          onclick={() => handleDeleteKey(key.id!)}
                           disabled={isProcessing}
                         >
                           {#if isProcessing}
                             <span class="inline-block animate-spin mr-2">&#10226;</span>
                             Processing...
                           {:else}
-                            {confirmAction.type === 'wipe' ? 'Yes, Wipe Data' : 'Yes, Delete Key'}
+                            Yes, Delete Key
                           {/if}
                         </button>
                         <button
@@ -604,6 +613,110 @@
             <li>Enable financial reporting</li>
           </ol>
         {/if}
+
+        <!-- Wipe Processed Data Button (for reprocessing) -->
+        <div class="pt-4 border-t border-amber-500/30 mt-4">
+          {#if confirmAction?.type === 'wipeProcessed'}
+            <!-- Wipe Processed Confirmation Dialog -->
+            <div class="bg-amber-500/20 border border-amber-500/50 rounded-lg p-4">
+              <p class="text-sm text-amber-200 mb-3">
+                <strong>Wipe processed data?</strong>
+              </p>
+              <p class="text-xs text-amber-300 mb-4">
+                This will clear all parsed records, aggregates, and display cache. Raw API responses
+                will be kept and can be reprocessed by clicking "Refresh Data".
+              </p>
+              <div class="flex gap-2">
+                <button
+                  type="button"
+                  class="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold text-sm transition-colors disabled:opacity-50"
+                  onclick={handleWipeProcessedData}
+                  disabled={isProcessing}
+                >
+                  {#if isProcessing}
+                    <span class="inline-block animate-spin mr-2">&#10226;</span>
+                    Processing...
+                  {:else}
+                    Yes, Wipe Processed Data
+                  {/if}
+                </button>
+                <button
+                  type="button"
+                  class="px-4 py-2 bg-white/10 hover:bg-white/20 text-purple-200 rounded-lg font-semibold text-sm transition-colors"
+                  onclick={() => (confirmAction = null)}
+                  disabled={isProcessing}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          {:else}
+            <button
+              type="button"
+              class="w-full px-4 py-3 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-300 rounded-lg font-semibold text-sm transition-colors flex items-center justify-center gap-2"
+              onclick={() => (confirmAction = { type: 'wipeProcessed' })}
+              title="Wipe processed data for reprocessing"
+            >
+              <span class="text-xl">&#128260;</span>
+              Wipe Processed Data
+            </button>
+            <p class="text-xs text-amber-400/70 mt-2 text-center">
+              Keeps raw API data but clears processed results. Use "Refresh Data" to reprocess.
+            </p>
+          {/if}
+        </div>
+
+        <!-- Wipe All Data Button -->
+        <div class="pt-4 border-t border-red-500/30 mt-4">
+          {#if confirmAction?.type === 'wipeAll'}
+            <!-- Wipe All Confirmation Dialog -->
+            <div class="bg-red-500/20 border border-red-500/50 rounded-lg p-4">
+              <p class="text-sm text-red-200 mb-3">
+                <strong>Wipe ALL data?</strong>
+              </p>
+              <p class="text-xs text-red-300 mb-4">
+                This will delete all sales records, aggregates, and display cache from all API keys.
+                API keys themselves will remain. This action cannot be undone.
+              </p>
+              <div class="flex gap-2">
+                <button
+                  type="button"
+                  class="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold text-sm transition-colors disabled:opacity-50"
+                  onclick={handleWipeAllData}
+                  disabled={isProcessing}
+                >
+                  {#if isProcessing}
+                    <span class="inline-block animate-spin mr-2">&#10226;</span>
+                    Processing...
+                  {:else}
+                    Yes, Wipe All Data
+                  {/if}
+                </button>
+                <button
+                  type="button"
+                  class="px-4 py-2 bg-white/10 hover:bg-white/20 text-purple-200 rounded-lg font-semibold text-sm transition-colors"
+                  onclick={() => (confirmAction = null)}
+                  disabled={isProcessing}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          {:else}
+            <button
+              type="button"
+              class="w-full px-4 py-3 bg-red-500/20 hover:bg-red-500/30 border border-red-500/50 text-red-300 rounded-lg font-semibold text-sm transition-colors flex items-center justify-center gap-2"
+              onclick={() => (confirmAction = { type: 'wipeAll' })}
+              title="Wipe all data from all API keys"
+            >
+              <span class="text-xl">&#128465;</span>
+              Wipe All Data
+            </button>
+            <p class="text-xs text-red-400/70 mt-2 text-center">
+              This will delete all sales data, aggregates, and display cache. API keys will remain.
+            </p>
+          {/if}
+        </div>
       </div>
     </div>
   </div>

@@ -1,6 +1,6 @@
 // Browser-mode service implementation
 // Orchestrates API key storage, Steam API client, and sync services
-// Uses Vite proxy for API calls, IndexedDB for storage, localStorage for settings
+// Uses Vite proxy for API calls, SQLite for storage, localStorage for settings
 
 import type {
   SalesService,
@@ -11,7 +11,11 @@ import type {
 } from './types';
 import type { SyncTask, SyncTaskService } from './sync-tasks';
 import { createTaskId } from './sync-tasks';
-import { db, computeAndStoreAggregates, clearAggregates } from '$lib/db/dexie';
+import { getParsedRecords, deleteParsedRecordsForApiKey } from '$lib/db/parsed-data';
+import { markAggregatesDirty, markDisplayDirty } from '$lib/db/data-state';
+import { processDataAfterDeletion } from '$lib/db/data-processor';
+import { wipeAllData, wipeProcessedData, sql, batch } from '$lib/db/sqlite';
+import { deleteRawDataForApiKey } from '$lib/db/raw-data';
 
 // Re-export modules for direct access if needed
 export * from './api-key-storage';
@@ -27,12 +31,10 @@ import {
   getHighwatermark,
   setHighwatermark,
   clearHighwatermark,
-  clearAllApiKeyStorage,
-  API_KEY_VALUES_PREFIX,
 } from './api-key-storage';
 
 import { fetchChangedDates } from './steam-api-client';
-import { fetchSalesData, saveSalesWithOverwrite } from './sync-service';
+import { fetchSalesData } from './sync-service';
 
 export const browserServices: SalesService = {
   // ============================================================================
@@ -61,51 +63,19 @@ export const browserServices: SalesService = {
   fetchSalesData,
 
   async getSalesFromDb(filters: Filters): Promise<SalesRecord[]> {
-    // For unfiltered queries on large datasets, consider using pagination
-    // This method still loads all data but uses more efficient queries
-    let collection = db.sales.toCollection();
-
-    // Use indexed queries where possible
-    if (filters.appIds && filters.appIds.length === 1) {
-      // Single app - use index
-      collection = db.sales.where('appId').equals(filters.appIds[0]);
-    } else if (filters.startDate && filters.endDate) {
-      collection = db.sales.where('date').between(filters.startDate, filters.endDate, true, true);
-    } else if (filters.startDate) {
-      collection = db.sales.where('date').aboveOrEqual(filters.startDate);
-    } else if (filters.endDate) {
-      collection = db.sales.where('date').belowOrEqual(filters.endDate);
-    }
-
-    let results = await collection.toArray();
-
-    // Apply remaining filters in memory
-    if (filters.countryCode) {
-      results = results.filter((r) => r.countryCode === filters.countryCode);
-    }
-    // Multi-select app filter (if we didn't use index or have multiple apps)
-    if (filters.appIds && filters.appIds.length > 1) {
-      const appIdSet = new Set(filters.appIds);
-      results = results.filter((r) => appIdSet.has(r.appId));
-    }
-    // Date filters if we used appIds index instead
-    if (filters.appIds && filters.appIds.length === 1) {
-      if (filters.startDate) {
-        results = results.filter((r) => r.date >= filters.startDate!);
-      }
-      if (filters.endDate) {
-        results = results.filter((r) => r.date <= filters.endDate!);
-      }
-    }
-
-    return results;
+    // Use parsed_sales table with pagination for large datasets
+    // For now, get first page - callers should use pagination for large datasets
+    const result = await getParsedRecords(1, 10000, filters);
+    return result.data;
   },
 
-  async saveSalesData(data: SalesRecord[], apiKeyId: string): Promise<void> {
-    // Tag all records with the API key ID
-    const taggedData = data.map((record) => ({ ...record, apiKeyId }));
-    // Look up existing records by composite key to ensure overwrites instead of duplicates
-    await saveSalesWithOverwrite(taggedData, apiKeyId);
+  async saveSalesData(_data: SalesRecord[], _apiKeyId: string): Promise<void> {
+    // Note: This method is deprecated in the new architecture
+    // Data should be stored via the raw -> parse -> aggregate pipeline
+    // Keeping for backward compatibility but it should not be used
+    console.warn('saveSalesData is deprecated - use raw -> parse pipeline instead');
+    // Mark aggregates dirty if data is saved this way
+    await markAggregatesDirty();
   },
 
   // ============================================================================
@@ -120,34 +90,42 @@ export const browserServices: SalesService = {
   // ============================================================================
 
   async clearAllData(onProgress?: DataProgressCallback): Promise<void> {
-    onProgress?.('Clearing sales records...', 10);
+    onProgress?.('Wiping all sales data...', 10);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // Clear all sales records
-    await db.sales.clear();
+    // Wipe all sales data from database (preserves API keys)
+    await wipeAllData();
 
-    onProgress?.('Clearing sync metadata...', 30);
+    onProgress?.('Clearing highwatermarks...', 50);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // Clear sync metadata
-    await db.syncMeta.clear();
-
-    onProgress?.('Clearing aggregates...', 50);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // Clear pre-computed aggregates
-    await clearAggregates();
-
-    onProgress?.('Clearing API keys...', 70);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // Clear all API keys and their data from localStorage
+    // Clear highwatermarks for all keys (so they can re-sync from the beginning)
+    // But preserve the API keys themselves
     const keys = await getAllApiKeys();
     for (const key of keys) {
-      localStorage.removeItem(`${API_KEY_VALUES_PREFIX}${key.id}`);
-      clearHighwatermark(key.id);
+      await clearHighwatermark(key.id);
     }
-    clearAllApiKeyStorage();
+
+    // Mark display cache as dirty so it gets recomputed (will result in empty data)
+    await markDisplayDirty();
+    await markAggregatesDirty();
+
+    onProgress?.('Complete!', 100);
+  },
+
+  async clearProcessedData(onProgress?: DataProgressCallback): Promise<void> {
+    onProgress?.('Wiping processed data (keeping raw)...', 10);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Wipe processed data but keep raw API responses
+    await wipeProcessedData();
+
+    onProgress?.('Resetting raw data for reprocessing...', 70);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Mark dirty flags so data gets reprocessed on next refresh
+    await markDisplayDirty();
+    await markAggregatesDirty();
 
     onProgress?.('Complete!', 100);
   },
@@ -158,216 +136,183 @@ export const browserServices: SalesService = {
     // Yield to let UI update
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // First count records for this API key
-    const recordsToDelete = await db.sales.where('apiKeyId').equals(apiKeyId).count();
+    // Delete parsed records for this API key
+    onProgress?.('Deleting records...', 10);
+    const deletedCount = await deleteParsedRecordsForApiKey(apiKeyId);
+    onProgress?.(`Deleted ${deletedCount.toLocaleString()} records`, 20);
 
-    if (recordsToDelete === 0) {
-      onProgress?.('No records to delete', 40);
-    } else {
-      onProgress?.(`Found ${recordsToDelete.toLocaleString()} records to delete...`, 8);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
-      // Get record IDs in batches for progress feedback
-      const COLLECT_BATCH_SIZE = 10000;
-      const recordIds: string[] = [];
-      let offset = 0;
-
-      while (offset < recordsToDelete) {
-        const batch = await db.sales
-          .where('apiKeyId')
-          .equals(apiKeyId)
-          .offset(offset)
-          .limit(COLLECT_BATCH_SIZE)
-          .toArray();
-
-        for (const record of batch) {
-          if (record.id !== undefined) {
-            // IDs are strings (unique key hashes) in the current schema
-            recordIds.push(String(record.id));
-          }
-        }
-
-        offset += batch.length;
-
-        // Map collection progress to range 8-15%
-        const collectProgress = 8 + Math.round((offset / recordsToDelete) * 7);
-        onProgress?.(
-          `Collecting records... ${offset.toLocaleString()} / ${recordsToDelete.toLocaleString()}`,
-          collectProgress
-        );
-        await new Promise((resolve) => setTimeout(resolve, 0));
-
-        if (batch.length < COLLECT_BATCH_SIZE) break;
-      }
-
-      // Delete in batches with progress
-      const DELETE_BATCH_SIZE = 5000;
-      let deleted = 0;
-
-      for (let i = 0; i < recordIds.length; i += DELETE_BATCH_SIZE) {
-        const batch = recordIds.slice(i, i + DELETE_BATCH_SIZE);
-        await db.sales.bulkDelete(batch);
-        deleted += batch.length;
-
-        // Map deletion progress to range 15-40%
-        const deleteProgress = 15 + Math.round((deleted / recordIds.length) * 25);
-        onProgress?.(
-          `Deleting... ${deleted.toLocaleString()} / ${recordIds.length.toLocaleString()}`,
-          deleteProgress
-        );
-
-        // Yield to let UI update
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-    }
-
-    onProgress?.('Resetting sync state...', 42);
+    // Delete raw data for this API key
+    await deleteRawDataForApiKey(apiKeyId);
 
     // Reset highwatermark for this key
-    clearHighwatermark(apiKeyId);
+    await clearHighwatermark(apiKeyId);
+    onProgress?.('Cleared highwatermark', 30);
 
-    onProgress?.('Clearing aggregates...', 45);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Mark aggregates and display cache as dirty
+    await markAggregatesDirty();
+    await markDisplayDirty();
 
-    // Recompute aggregates
-    await clearAggregates();
-    const count = await db.sales.count();
-    if (count > 0) {
-      onProgress?.('Recomputing aggregates...', 50);
-      await computeAndStoreAggregates((message, progress) => {
-        // Map aggregate progress (0-100) to our range (50-95)
-        const mappedProgress = 50 + Math.round(progress * 0.45);
+    // Process data after deletion (recomputes caches or clears them if empty)
+    await processDataAfterDeletion({
+      onProgress: (message, progress) => {
+        // Map progress (0-100) to 35-100 range
+        const mappedProgress = 35 + Math.round(progress * 0.65);
         onProgress?.(message, mappedProgress);
-      });
-    }
-
-    onProgress?.('Complete!', 100);
+      },
+    });
   },
 
   async getExistingDates(apiKeyId: string): Promise<Set<string>> {
-    // Get unique dates for this specific API key
-    const dates = new Set<string>();
-    const records = await db.sales.where('apiKeyId').equals(apiKeyId).toArray();
-    for (const record of records) {
-      dates.add(record.date);
-    }
-    return dates;
+    // Get unique dates for this specific API key from parsed_sales using SQL
+    const results = (await sql`
+      SELECT DISTINCT date FROM parsed_sales WHERE api_key_id = ${apiKeyId}
+    `) as { date: string }[];
+
+    return new Set(results.map((r) => r.date));
   },
 };
 
 // ============================================================================
-// Sync Task Service (Browser/Dexie implementation)
+// Sync Task Service (Browser/SQLite implementation)
 // ============================================================================
 
 export const browserSyncTaskService: SyncTaskService = {
   async createSyncTasks(apiKeyId: string, dates: string[]): Promise<void> {
     const now = Date.now();
-    const datesSet = new Set(dates);
 
-    // OPTIMIZATION: Instead of O(n) queries (one per date), do a single query
-    // to find all records for this apiKeyId, then filter by dates in memory
+    // Delete existing parsed sales for these dates and insert sync tasks in batch
+    if (dates.length > 0) {
+      await batch((batchSql) => [
+        // Delete existing parsed sales for these dates
+        ...dates.map(
+          (date) => batchSql`
+          DELETE FROM parsed_sales WHERE api_key_id = ${apiKeyId} AND date = ${date}
+        `
+        ),
+        // Insert sync tasks
+        ...dates.map((date) => {
+          const id = createTaskId(apiKeyId, date);
+          return batchSql`
+            INSERT OR REPLACE INTO sync_tasks (id, api_key_id, date, status, created_at)
+            VALUES (${id}, ${apiKeyId}, ${date}, 'todo', ${now})
+          `;
+        }),
+      ]);
 
-    // Single query to get all records for this API key that match any of the dates
-    const recordsToDelete = await db.sales
-      .where('apiKeyId')
-      .equals(apiKeyId)
-      .filter((r) => datesSet.has(r.date))
-      .primaryKeys();
-
-    // Bulk delete all matching records in one operation
-    if (recordsToDelete.length > 0) {
-      await db.sales.bulkDelete(recordsToDelete as string[]);
-    }
-
-    // Build all tasks at once (no async operations needed)
-    const tasks: SyncTask[] = dates.map((date) => ({
-      id: createTaskId(apiKeyId, date),
-      apiKeyId,
-      date,
-      status: 'todo' as const,
-      createdAt: now,
-    }));
-
-    // Bulk put will overwrite existing tasks with same ID
-    if (tasks.length > 0) {
-      await db.syncTasks.bulkPut(tasks);
+      // Mark aggregates dirty after deletion
+      await markAggregatesDirty();
     }
   },
 
   async getPendingTasks(): Promise<SyncTask[]> {
-    const tasks = await db.syncTasks.where('status').anyOf(['todo', 'in_progress']).sortBy('date');
-    return tasks;
+    const results = (await sql`
+      SELECT id, api_key_id, date, status, created_at, completed_at 
+      FROM sync_tasks 
+      WHERE status IN ('todo', 'in_progress')
+      ORDER BY date
+    `) as {
+      id: string;
+      api_key_id: string;
+      date: string;
+      status: 'todo' | 'in_progress' | 'done';
+      created_at: number;
+      completed_at?: number;
+    }[];
+
+    return results.map((r) => ({
+      id: r.id,
+      apiKeyId: r.api_key_id,
+      date: r.date,
+      status: r.status,
+      createdAt: r.created_at,
+      completedAt: r.completed_at,
+    }));
   },
 
   async getPendingTasksForKey(apiKeyId: string): Promise<SyncTask[]> {
-    const tasks = await db.syncTasks
-      .where('[apiKeyId+status]')
-      .anyOf([
-        [apiKeyId, 'todo'],
-        [apiKeyId, 'in_progress'],
-      ])
-      .sortBy('date');
-    return tasks;
+    const results = (await sql`
+      SELECT id, api_key_id, date, status, created_at, completed_at 
+      FROM sync_tasks 
+      WHERE api_key_id = ${apiKeyId} AND status IN ('todo', 'in_progress')
+      ORDER BY date
+    `) as {
+      id: string;
+      api_key_id: string;
+      date: string;
+      status: 'todo' | 'in_progress' | 'done';
+      created_at: number;
+      completed_at?: number;
+    }[];
+
+    return results.map((r) => ({
+      id: r.id,
+      apiKeyId: r.api_key_id,
+      date: r.date,
+      status: r.status,
+      createdAt: r.created_at,
+      completedAt: r.completed_at,
+    }));
   },
 
   async markTaskInProgress(taskId: string): Promise<void> {
-    await db.syncTasks.update(taskId, { status: 'in_progress' });
+    await sql`UPDATE sync_tasks SET status = 'in_progress' WHERE id = ${taskId}`;
   },
 
   async markTaskDone(taskId: string): Promise<void> {
-    await db.syncTasks.update(taskId, {
-      status: 'done',
-      completedAt: Date.now(),
-    });
+    const now = Date.now();
+    await sql`UPDATE sync_tasks SET status = 'done', completed_at = ${now} WHERE id = ${taskId}`;
   },
 
   async countPendingTasks(): Promise<Map<string, number>> {
+    const results = (await sql`
+      SELECT api_key_id, COUNT(*) as count 
+      FROM sync_tasks 
+      WHERE status IN ('todo', 'in_progress')
+      GROUP BY api_key_id
+    `) as { api_key_id: string; count: number }[];
+
     const counts = new Map<string, number>();
-    const tasks = await db.syncTasks.where('status').anyOf(['todo', 'in_progress']).toArray();
-
-    for (const task of tasks) {
-      const current = counts.get(task.apiKeyId) || 0;
-      counts.set(task.apiKeyId, current + 1);
+    for (const r of results) {
+      counts.set(r.api_key_id, r.count);
     }
-
     return counts;
   },
 
   async countAllPendingTasks(): Promise<number> {
-    return db.syncTasks.where('status').anyOf(['todo', 'in_progress']).count();
+    const result = (await sql`
+      SELECT COUNT(*) as count FROM sync_tasks WHERE status IN ('todo', 'in_progress')
+    `) as { count: number }[];
+    return result[0]?.count ?? 0;
   },
 
   async resetInProgressTasks(): Promise<number> {
-    const inProgressTasks = await db.syncTasks.where('status').equals('in_progress').toArray();
+    // Get count first
+    const countResult = (await sql`
+      SELECT COUNT(*) as count FROM sync_tasks WHERE status = 'in_progress'
+    `) as { count: number }[];
+    const count = countResult[0]?.count ?? 0;
 
-    if (inProgressTasks.length > 0) {
-      await db.syncTasks.bulkUpdate(
-        inProgressTasks.map((task) => ({
-          key: task.id,
-          changes: { status: 'todo' as const },
-        }))
-      );
-    }
+    // Reset status
+    await sql`UPDATE sync_tasks SET status = 'todo' WHERE status = 'in_progress'`;
 
-    return inProgressTasks.length;
+    return count;
   },
 
   async clearCompletedTasks(): Promise<void> {
-    await db.syncTasks.where('status').equals('done').delete();
+    await sql`DELETE FROM sync_tasks WHERE status = 'done'`;
+  },
+
+  async clearAllSyncTasks(): Promise<void> {
+    await sql`DELETE FROM sync_tasks`;
   },
 
   async deleteSyncTasksForKey(apiKeyId: string): Promise<void> {
-    await db.syncTasks.where('apiKeyId').equals(apiKeyId).delete();
+    await sql`DELETE FROM sync_tasks WHERE api_key_id = ${apiKeyId}`;
   },
 
   async clearSalesForDate(apiKeyId: string, date: string): Promise<void> {
-    const recordsToDelete = await db.sales
-      .where('apiKeyId')
-      .equals(apiKeyId)
-      .filter((r) => r.date === date)
-      .primaryKeys();
-    if (recordsToDelete.length > 0) {
-      await db.sales.bulkDelete(recordsToDelete as string[]);
-    }
+    await sql`DELETE FROM parsed_sales WHERE api_key_id = ${apiKeyId} AND date = ${date}`;
+    // Mark aggregates dirty after deletion
+    await markAggregatesDirty();
   },
 };

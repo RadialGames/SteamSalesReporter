@@ -213,6 +213,7 @@ export interface SalesService {
 
   // Data management
   clearAllData(onProgress?: DataProgressCallback): Promise<void>;
+  clearProcessedData(onProgress?: DataProgressCallback): Promise<void>;
   clearDataForKey(apiKeyId: string, onProgress?: DataProgressCallback): Promise<void>;
 
   // Helper to get dates already in DB for prioritization

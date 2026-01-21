@@ -1,15 +1,16 @@
 <script lang="ts">
-  import StatsCards from './StatsCards.svelte';
-  import FilterBar from './FilterBar.svelte';
-  import RevenueChart from './RevenueChart.svelte';
-  import SkuComparison from './SkuComparison.svelte';
-  import CountryChart from './CountryChart.svelte';
-  import SalesTable from './SalesTable.svelte';
+  import ChartsView from './ChartsView.svelte';
+  import DataTableView from './DataTableView.svelte';
   import LaunchComparison from './LaunchComparison.svelte';
   import PackageMetrics from './PackageMetrics.svelte';
+  import { onMount } from 'svelte';
   import { ToggleGroup } from './ui';
-  import { salesStore } from '$lib/stores/sales';
   import type { ApiKeyInfo } from '$lib/services/types';
+  import { getParsedRecordsCount } from '$lib/db/parsed-data';
+
+  type TabId = 'charts' | 'dataTable' | 'launchComparison' | 'packageMetrics';
+
+  const validTabs: TabId[] = ['charts', 'dataTable', 'launchComparison', 'packageMetrics'];
 
   interface Props {
     apiKeys?: ApiKeyInfo[];
@@ -17,12 +18,64 @@
 
   let { apiKeys = [] }: Props = $props();
 
-  let topLevelTab = $state<'dataView' | 'launchComparison' | 'packageMetrics'>('dataView');
-  let dataViewTab = $state<'charts' | 'table'>('charts');
+  let activeTab = $state<TabId>('charts');
+  let hasData = $state(false);
+
+  const tabOptions = [
+    { value: 'charts', label: 'Charts', icon: '&#128200;' },
+    { value: 'dataTable', label: 'Data Table', icon: '&#128203;' },
+    { value: 'launchComparison', label: 'Launch Comparison', icon: '&#128640;' },
+    { value: 'packageMetrics', label: 'Package Metrics', icon: '&#128202;' },
+  ];
+
+  // Read tab from URL hash
+  function getTabFromHash(): TabId {
+    const hash = window.location.hash.slice(1); // Remove the '#'
+    if (validTabs.includes(hash as TabId)) {
+      return hash as TabId;
+    }
+    return 'charts';
+  }
+
+  // Update URL hash when tab changes
+  function setTabHash(tab: TabId) {
+    // Use replaceState to avoid cluttering browser history with tab changes
+    const url = new URL(window.location.href);
+    url.hash = tab;
+    window.history.replaceState(null, '', url.toString());
+  }
+
+  // Handle tab change from UI
+  function handleTabChange(newTab: string) {
+    activeTab = newTab as TabId;
+    setTabHash(activeTab);
+  }
+
+  // Listen for browser back/forward navigation
+  function handleHashChange() {
+    activeTab = getTabFromHash();
+  }
+
+  onMount(() => {
+    // Set initial tab from URL hash
+    activeTab = getTabFromHash();
+
+    // Listen for hash changes (back/forward buttons)
+    window.addEventListener('hashchange', handleHashChange);
+
+    // Check for data asynchronously
+    getParsedRecordsCount().then((count) => {
+      hasData = count > 0;
+    });
+
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+    };
+  });
 </script>
 
 <div class="space-y-6">
-  {#if $salesStore.length === 0}
+  {#if !hasData}
     <!-- Welcome State - Only unicorn bubble when no data (no tabs shown) -->
     <div class="glass-card p-12 text-center">
       <div class="text-8xl mb-4 unicorn-bounce inline-block">&#129412;</div>
@@ -58,61 +111,19 @@
     <div class="border-b border-white/10 pb-4">
       <ToggleGroup
         variant="tabs"
-        options={[
-          { value: 'dataView', label: 'Data View', icon: '&#128202;' },
-          { value: 'launchComparison', label: 'Launch Comparison', icon: '&#128640;' },
-          { value: 'packageMetrics', label: 'Package Metrics', icon: '&#128202;' },
-        ]}
-        value={topLevelTab}
-        onchange={(v) => (topLevelTab = v as 'dataView' | 'launchComparison' | 'packageMetrics')}
+        options={tabOptions}
+        value={activeTab}
+        onchange={handleTabChange}
       />
     </div>
 
-    {#if topLevelTab === 'dataView'}
-      <!-- Stats Overview -->
-      <StatsCards />
-
-      <!-- Filter Bar -->
-      <FilterBar />
-
-      <!-- Data View Tab Navigation -->
-      <ToggleGroup
-        variant="tabs-secondary"
-        options={[
-          { value: 'charts', label: 'Charts', icon: '&#128200;' },
-          { value: 'table', label: 'Data Table', icon: '&#128203;' },
-        ]}
-        value={dataViewTab}
-        onchange={(v) => (dataViewTab = v as 'charts' | 'table')}
-      />
-
-      {#if dataViewTab === 'charts'}
-        <!-- Charts Grid -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <!-- Revenue Over Time (Full Width on mobile, half on desktop) -->
-          <div class="lg:col-span-2">
-            <RevenueChart />
-          </div>
-
-          <!-- SKU Comparison -->
-          <div>
-            <SkuComparison />
-          </div>
-
-          <!-- Country Breakdown -->
-          <div>
-            <CountryChart />
-          </div>
-        </div>
-      {:else}
-        <!-- Data Table -->
-        <SalesTable />
-      {/if}
-    {:else if topLevelTab === 'launchComparison'}
-      <!-- Launch Comparison -->
+    {#if activeTab === 'charts'}
+      <ChartsView />
+    {:else if activeTab === 'dataTable'}
+      <DataTableView />
+    {:else if activeTab === 'launchComparison'}
       <LaunchComparison />
-    {:else if topLevelTab === 'packageMetrics'}
-      <!-- Package Metrics -->
+    {:else if activeTab === 'packageMetrics'}
       <PackageMetrics />
     {/if}
   {/if}

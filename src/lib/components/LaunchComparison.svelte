@@ -1,29 +1,28 @@
 <script lang="ts">
-  import { untrack, tick } from 'svelte';
-  import { salesStore } from '$lib/stores/sales';
+  import { untrack, tick, onMount } from 'svelte';
+  import { streamParsedRecords } from '$lib/db/parsed-data';
+  import type { SalesRecord } from '$lib/services/types';
   import ProductLaunchTable from './ProductLaunchTable.svelte';
   import UnicornLoader from './UnicornLoader.svelte';
   import { ToggleGroup } from './ui';
-  import type { SalesRecord } from '$lib/services/types';
-  import {
-    computeProductGroups,
-    shouldUseWorker,
-    type ProductGroup,
-    type WorkerProgress,
-  } from '$lib/workers';
+  import { computeProductGroups, type ProductGroup, type WorkerProgress } from '$lib/workers';
   import { calculateLaunchDays } from '$lib/utils/launch-metrics';
 
   let maxDays = $state(2);
   let copyFeedback = $state(false);
   let groupBy = $state<'appId' | 'packageId'>('appId');
 
+  // Data loading state
+  let salesData = $state<SalesRecord[]>([]);
+  let isLoadingData = $state(false);
+
   // Loading state for async computations
   let isComputing = $state(false);
   let computedAppGroups = $state<ProductGroup[]>([]);
   let computedPackageGroups = $state<ProductGroup[]>([]);
-  let lastComputedDataLength = $state(0);
-  let lastComputedGroupBy = $state<'appId' | 'packageId' | null>(null);
-  let useWorker = $state(false);
+  // Track data length when each group type was computed (for caching)
+  let appGroupsComputedForLength = $state(0);
+  let packageGroupsComputedForLength = $state(0);
 
   // Progress tracking
   let computeProgress = $state<WorkerProgress>({ processed: 0, total: 0 });
@@ -121,18 +120,41 @@
     }
   }
 
+  // Load all records when component mounts
+  onMount(async () => {
+    isLoadingData = true;
+    try {
+      const records: SalesRecord[] = [];
+      await streamParsedRecords(10000, async (batch) => {
+        records.push(...batch);
+      });
+      // Create plain copies to strip any potential reactive properties or database-specific properties
+      salesData = records.map((record) => ({ ...record }));
+    } catch (error) {
+      console.error('Error loading data for launch comparison:', error);
+    } finally {
+      isLoadingData = false;
+    }
+  });
+
   // Trigger recomputation when data or groupBy changes
   // Uses the shared worker manager which handles worker vs main thread fallback
   $effect(() => {
-    const records = $salesStore;
+    const records = salesData;
     const currentGroupBy = groupBy;
 
-    // Use untrack to read state without creating dependencies
-    const lastLength = untrack(() => lastComputedDataLength);
-    const lastGroupBy = untrack(() => lastComputedGroupBy);
+    // Use untrack to read cached computation lengths without creating dependencies
+    const appCachedLength = untrack(() => appGroupsComputedForLength);
+    const packageCachedLength = untrack(() => packageGroupsComputedForLength);
 
-    // Check if we need to recompute
-    if (records.length === lastLength && currentGroupBy === lastGroupBy) {
+    // Check if we already have cached results for this groupBy with current data
+    const hasCachedResults =
+      currentGroupBy === 'appId'
+        ? appCachedLength === records.length && records.length > 0
+        : packageCachedLength === records.length && records.length > 0;
+
+    if (hasCachedResults) {
+      // Already computed for this groupBy with same data - use cached results
       return;
     }
 
@@ -147,8 +169,8 @@
     if (records.length === 0) {
       computedAppGroups = [];
       computedPackageGroups = [];
-      lastComputedDataLength = 0;
-      lastComputedGroupBy = currentGroupBy;
+      appGroupsComputedForLength = 0;
+      packageGroupsComputedForLength = 0;
       return;
     }
 
@@ -166,65 +188,69 @@
 
     // Set loading state
     isComputing = true;
-    useWorker = shouldUseWorker(records.length);
 
     // Use tick() to flush Svelte DOM updates, then RAF to yield to browser paint,
-    // ensuring the loading state is visible before computation starts
+    // then setTimeout(0) to ensure the loading state is fully rendered before computation
     tick().then(() => {
       requestAnimationFrame(() => {
-        // Double-check we weren't cancelled during the yield
-        if (controller.signal.aborted) return;
+        setTimeout(() => {
+          // Double-check we weren't cancelled during the yield
+          if (controller.signal.aborted) return;
 
-        computeProductGroups(records, currentGroupBy, {
-          onProgress,
-          signal: controller.signal,
-        })
-          .then(async (groups) => {
-            // CRITICAL: Strip Svelte proxies from nested records for performance
-            // Worker path already returns plain objects (postMessage serializes them)
-            // Sync path also creates plain objects, but we need to ensure the groups array itself is plain
-            // Use a memory-efficient approach that processes groups individually to avoid
-            // exceeding JavaScript's maximum string length limit
-            const plainGroups: typeof groups = groups.map((group) => {
-              // Create a plain copy of the group
-              const plainGroup = {
-                id: group.id,
-                name: group.name,
-                records: group.records.map((record) => ({ ...record })),
-                hasRevenue: group.hasRevenue,
-                launchMetrics: group.launchMetrics,
-              };
-              return plainGroup;
-            });
+          // Create plain copies of records to strip any reactive properties
+          const plainRecords = records.map((record) => ({ ...record }));
 
-            // Compute launch metrics if not already computed (worker path doesn't compute them)
-            // This happens AFTER stripping proxies, so records are plain objects = fast
-            for (const group of plainGroups) {
-              if (!group.launchMetrics) {
-                group.launchMetrics = calculateLaunchDays(group.records, 365);
-              }
-            }
-
-            if (currentGroupBy === 'appId') {
-              computedAppGroups = plainGroups;
-            } else {
-              computedPackageGroups = plainGroups;
-            }
-            lastComputedDataLength = records.length;
-            lastComputedGroupBy = currentGroupBy;
-            isComputing = false;
-            abortController = null;
-
-            await tick();
+          computeProductGroups(plainRecords, currentGroupBy, {
+            onProgress,
+            signal: controller.signal,
           })
-          .catch((error) => {
-            // Only log if not a cancellation
-            if (error.message !== 'Computation cancelled') {
-              console.error('Computation error:', error);
-            }
-            isComputing = false;
-            abortController = null;
-          });
+            .then(async (groups) => {
+              // CRITICAL: Strip Svelte proxies from nested records for performance
+              // Worker path already returns plain objects (postMessage serializes them)
+              // Sync path also creates plain objects, but we need to ensure the groups array itself is plain
+              // Use a memory-efficient approach that processes groups individually to avoid
+              // exceeding JavaScript's maximum string length limit
+              const plainGroups: typeof groups = groups.map((group) => {
+                // Create a plain copy of the group
+                const plainGroup = {
+                  id: group.id,
+                  name: group.name,
+                  records: group.records.map((record) => ({ ...record })),
+                  hasRevenue: group.hasRevenue,
+                  launchMetrics: group.launchMetrics,
+                };
+                return plainGroup;
+              });
+
+              // Compute launch metrics if not already computed (worker path doesn't compute them)
+              // This happens AFTER stripping proxies, so records are plain objects = fast
+              for (const group of plainGroups) {
+                if (!group.launchMetrics) {
+                  group.launchMetrics = calculateLaunchDays(group.records, 365);
+                }
+              }
+
+              if (currentGroupBy === 'appId') {
+                computedAppGroups = plainGroups;
+                appGroupsComputedForLength = records.length;
+              } else {
+                computedPackageGroups = plainGroups;
+                packageGroupsComputedForLength = records.length;
+              }
+              isComputing = false;
+              abortController = null;
+
+              await tick();
+            })
+            .catch((error) => {
+              // Only log if not a cancellation
+              if (error.message !== 'Computation cancelled') {
+                console.error('Computation error:', error);
+              }
+              isComputing = false;
+              abortController = null;
+            });
+        }, 0);
       });
     });
   });
@@ -473,7 +499,11 @@
     </div>
   </div>
 
-  {#if $salesStore.length === 0}
+  {#if isLoadingData}
+    <div class="glass-card p-12 text-center">
+      <UnicornLoader message="Loading sales data..." size="medium" />
+    </div>
+  {:else if salesData.length === 0}
     <div class="glass-card p-12 text-center">
       <div class="text-6xl mb-4">&#128202;</div>
       <h3 class="text-xl font-bold text-purple-200 mb-2">No Data Available</h3>
@@ -522,11 +552,9 @@
         </div>
       </div>
 
-      <!-- Worker indicator and Cancel button -->
+      <!-- Cancel button -->
       <div class="mt-4 flex flex-col items-center gap-3">
-        {#if useWorker}
-          <p class="text-purple-300 text-sm">Using background worker for better performance</p>
-        {/if}
+        <p class="text-purple-300 text-sm">Processing in background thread</p>
         <button
           type="button"
           class="px-4 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 border border-yellow-500/50

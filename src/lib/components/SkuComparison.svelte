@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import {
     Chart,
     BarController,
@@ -10,12 +10,29 @@
     Tooltip,
     Legend,
   } from 'chart.js';
-  import { appSummary } from '$lib/stores/sales';
+  import { getAppAggregates } from '$lib/db/aggregates';
+  import { useChartLifecycle } from '$lib/utils/chart-lifecycle.svelte';
+
+  interface AppData {
+    appId: number;
+    appName: string;
+    totalRevenue: number;
+    totalUnits: number;
+  }
+
+  let appData = $state<AppData[]>([]);
+
+  onMount(async () => {
+    const aggregates = await getAppAggregates();
+    appData = aggregates.slice(0, 10).map((a) => ({
+      appId: a.app_id,
+      appName: a.app_name,
+      totalRevenue: a.total_revenue,
+      totalUnits: a.total_units,
+    }));
+  });
 
   Chart.register(BarController, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
-
-  let canvas: HTMLCanvasElement = $state.raw(null!);
-  let chart: Chart | null = null;
 
   // Rainbow colors for bars
   const rainbowColors = [
@@ -28,17 +45,12 @@
     'rgba(94, 213, 122, 0.8)',
   ];
 
-  function createChart() {
-    if (!canvas) return;
+  function createChart(canvas: HTMLCanvasElement): Chart {
     const ctx = canvas;
 
-    if (chart) {
-      chart.destroy();
-    }
+    const data = appData;
 
-    const data = $appSummary.slice(0, 10);
-
-    chart = new Chart(ctx, {
+    return new Chart(ctx, {
       type: 'bar',
       data: {
         labels: data.map((a) => a.appName),
@@ -116,22 +128,7 @@
     });
   }
 
-  onMount(() => {
-    createChart();
-  });
-
-  onDestroy(() => {
-    if (chart) {
-      chart.destroy();
-    }
-  });
-
-  $effect(() => {
-    $appSummary;
-    if (canvas) {
-      createChart();
-    }
-  });
+  const { setCanvas } = useChartLifecycle(createChart, () => [appData]);
 </script>
 
 <div class="chart-container">
@@ -140,7 +137,7 @@
     Revenue by Product
   </h3>
 
-  {#if $appSummary.length === 0}
+  {#if appData.length === 0}
     <div class="flex flex-col items-center justify-center h-64 text-purple-300">
       <span class="text-4xl mb-2">&#128230;</span>
       <p>No products to compare yet</p>
@@ -148,7 +145,7 @@
     </div>
   {:else}
     <div class="h-80">
-      <canvas bind:this={canvas}></canvas>
+      <canvas use:setCanvas></canvas>
     </div>
   {/if}
 </div>

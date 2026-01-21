@@ -1,40 +1,31 @@
 <script lang="ts">
-  import { filterStore, salesStore } from '$lib/stores/sales';
+  import { onMount } from 'svelte';
+  import { filterStore } from '$lib/stores/sales';
   import type { Filters } from '$lib/services/types';
+  import {
+    getUniqueApps,
+    getUniqueCountries,
+    getDateRange,
+    getUniqueApiKeyIds,
+  } from '$lib/db/parsed-data';
 
-  // Get unique values from sales data
-  const uniqueApps = $derived.by(() => {
-    const apps = new Map<number, string>();
-    for (const sale of $salesStore) {
-      if (!apps.has(sale.appId)) {
-        apps.set(sale.appId, sale.appName || `App ${sale.appId}`);
-      }
+  // Load unique values from database
+  let uniqueApps = $state<{ appId: number; appName: string }[]>([]);
+  let uniqueCountries = $state<string[]>([]);
+  let uniqueApiKeys = $state<string[]>([]);
+  let dateRange = $state<{ min: string; max: string }>({ min: '', max: '' });
+
+  onMount(async () => {
+    // Load unique values from database using SQL queries
+    uniqueApps = await getUniqueApps();
+    uniqueCountries = await getUniqueCountries();
+    uniqueApiKeys = await getUniqueApiKeyIds();
+
+    // Get date range
+    const range = await getDateRange();
+    if (range) {
+      dateRange = range;
     }
-    return Array.from(apps.entries()).map(([id, name]) => ({ id, name }));
-  });
-
-  const uniqueCountries = $derived.by(() => {
-    const countries = new Set<string>();
-    for (const sale of $salesStore) {
-      countries.add(sale.countryCode);
-    }
-    return Array.from(countries).sort();
-  });
-
-  const uniqueApiKeys = $derived.by(() => {
-    const apiKeys = new Set<string>();
-    for (const sale of $salesStore) {
-      if (sale.apiKeyId) {
-        apiKeys.add(sale.apiKeyId);
-      }
-    }
-    return Array.from(apiKeys).sort();
-  });
-
-  const dateRange = $derived.by(() => {
-    if ($salesStore.length === 0) return { min: '', max: '' };
-    const dates = $salesStore.map((s) => s.date).sort();
-    return { min: dates[0], max: dates[dates.length - 1] };
   });
 
   let startDate = $state('');
@@ -98,8 +89,8 @@
         <span class="text-purple-300 text-sm font-medium">&#127918; Product:</span>
         <select bind:value={selectedAppId} class="input-magic text-sm py-1 px-2 min-w-[150px]">
           <option value="">All Products</option>
-          {#each uniqueApps as app (app.id)}
-            <option value={app.id}>{app.name}</option>
+          {#each uniqueApps as app (app.appId)}
+            <option value={app.appId}>{app.appName}</option>
           {/each}
         </select>
       </div>

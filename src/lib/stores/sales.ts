@@ -10,7 +10,7 @@
  * consider using:
  *
  * - Web Workers via `computeProductGroups()` from '$lib/workers'
- * - Pre-computed aggregates from IndexedDB via `getAppAggregates()` from '$lib/db/dexie'
+ * - Pre-computed aggregates from SQLite via `getAppAggregates()` from '$lib/db/aggregates'
  *
  * ## Debouncing
  *
@@ -31,6 +31,7 @@ import type {
   Filters,
 } from '$lib/services/types';
 import { applyFilters, applyFiltersExcluding } from '$lib/utils/filters';
+import { calculateNetUnitsFromRecord, sumGrossRevenue } from '$lib/utils/calculations';
 
 // Debounce delay in milliseconds
 const FILTER_DEBOUNCE_MS = 200;
@@ -164,7 +165,7 @@ export const dailySummary = derived([salesStore, debouncedFilters], ([$sales, $f
       totalUnits: 0,
     };
 
-    existing.totalRevenue += sale.netSalesUsd ?? 0;
+    existing.totalRevenue += sale.grossSalesUsd ?? 0;
     existing.totalUnits += sale.unitsSold;
     byDate.set(sale.date, existing);
   }
@@ -186,7 +187,7 @@ export const appSummary = derived([salesStore, debouncedFilters], ([$sales, $fil
       totalUnits: 0,
     };
 
-    existing.totalRevenue += sale.netSalesUsd ?? 0;
+    existing.totalRevenue += sale.grossSalesUsd ?? 0;
     existing.totalUnits += sale.unitsSold;
     if (sale.appName) existing.appName = sale.appName;
     byApp.set(sale.appId, existing);
@@ -208,7 +209,7 @@ export const countrySummary = derived([salesStore, debouncedFilters], ([$sales, 
       totalUnits: 0,
     };
 
-    existing.totalRevenue += sale.netSalesUsd ?? 0;
+    existing.totalRevenue += sale.grossSalesUsd ?? 0;
     existing.totalUnits += sale.unitsSold;
     byCountry.set(sale.countryCode, existing);
   }
@@ -221,8 +222,8 @@ export const totalStats = derived([salesStore, debouncedFilters], ([$sales, $fil
   const filtered = applyFilters($sales, $filters);
 
   return {
-    totalRevenue: filtered.reduce((sum, s) => sum + (s.netSalesUsd ?? 0), 0),
-    totalUnits: filtered.reduce((sum, s) => sum + s.unitsSold, 0),
+    totalRevenue: sumGrossRevenue(filtered),
+    totalUnits: filtered.reduce((sum, s) => sum + calculateNetUnitsFromRecord(s), 0),
     totalRecords: filtered.length,
     uniqueApps: new Set(filtered.map((s) => s.appId)).size,
     uniqueCountries: new Set(filtered.map((s) => s.countryCode)).size,

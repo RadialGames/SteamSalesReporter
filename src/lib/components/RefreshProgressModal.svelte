@@ -21,6 +21,7 @@
 
   // Time estimation state - track overall sync progress
   let populateStartTime = $state<number | null>(null); // When populate phase started
+  let aggregatesStartTime = $state<number | null>(null); // When aggregates phase started
   let lastItemCount = $state(0); // Track previous count to detect phase start
   let smoothedEstimateMs = $state<number | null>(null); // Smoothed estimate for display stability
   let currentTime = $state(Date.now());
@@ -68,6 +69,7 @@
       // Reset when sync completes, is cancelled, or errors
       if (phase === 'complete' || phase === 'cancelled' || phase === 'error') {
         populateStartTime = null;
+        aggregatesStartTime = null;
         lastItemCount = 0;
         smoothedEstimateMs = null;
         return;
@@ -87,9 +89,20 @@
           populateStartTime = Date.now();
         }
         lastItemCount = current;
-      } else {
-        // Not in populate phase - clear start time
+        // Clear aggregates start time when switching to populate
+        aggregatesStartTime = null;
+      } else if (phase === 'aggregates') {
+        // Track when aggregates phase starts
+        if (aggregatesStartTime === null) {
+          aggregatesStartTime = Date.now();
+        }
+        lastItemCount = current;
+        // Clear populate start time when switching to aggregates
         populateStartTime = null;
+      } else {
+        // Not in populate or aggregates phase - clear start times
+        populateStartTime = null;
+        aggregatesStartTime = null;
       }
     });
   });
@@ -97,8 +110,13 @@
   // Calculate raw estimate based on overall sync progress
   let rawEstimateMs = $derived.by(() => {
     const isPopulatePhase = progress.phase === 'populate';
+    const isAggregatesPhase = progress.phase === 'aggregates';
 
-    if (!isPopulatePhase || populateStartTime === null) {
+    if (
+      (!isPopulatePhase && !isAggregatesPhase) ||
+      (isPopulatePhase && populateStartTime === null) ||
+      (isAggregatesPhase && aggregatesStartTime === null)
+    ) {
       return null;
     }
 
@@ -111,7 +129,8 @@
     }
 
     const now = Date.now();
-    const elapsedMs = now - populateStartTime;
+    const startTime = isPopulatePhase ? populateStartTime : aggregatesStartTime;
+    const elapsedMs = now - startTime!;
 
     // Need minimum elapsed time before showing estimate
     if (elapsedMs < MIN_ELAPSED_MS) {
@@ -173,8 +192,13 @@
   // Format the smoothed estimate for display
   let estimatedTimeRemaining = $derived.by(() => {
     const isPopulatePhase = progress.phase === 'populate';
+    const isAggregatesPhase = progress.phase === 'aggregates';
 
-    if (!isPopulatePhase || smoothedEstimateMs === null || smoothedEstimateMs < 5000) {
+    if (
+      (!isPopulatePhase && !isAggregatesPhase) ||
+      smoothedEstimateMs === null ||
+      smoothedEstimateMs < 5000
+    ) {
       return null;
     }
 

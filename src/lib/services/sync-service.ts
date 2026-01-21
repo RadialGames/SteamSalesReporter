@@ -2,11 +2,11 @@
 // Handles batch processing, progress reporting, and database persistence
 
 import type { SalesRecord, ProgressCallback, FetchParams, FetchResult } from './types';
-import { db } from '$lib/db/dexie';
 import { generateUniqueKey } from '$lib/shared/steam-transform';
 import { sortDatesByPriority } from '$lib/utils/dates';
 import { fetchSalesForDate, fetchChangedDates, SyncCancelledError } from './steam-api-client';
 import { getHighwatermark } from './api-key-storage';
+import { storeParsedRecords, getParsedRecords } from '$lib/db/parsed-data';
 
 export { SyncCancelledError };
 
@@ -36,7 +36,9 @@ async function saveSalesWithOverwrite(newRecords: SalesRecord[], apiKeyId: strin
   });
 
   // Use bulkPut - it will automatically overwrite records with matching id (unique key)
-  await db.sales.bulkPut(taggedRecords);
+  // Note: This function is deprecated - new architecture uses raw -> parse pipeline
+  // Keeping for backward compatibility but should not be used
+  await storeParsedRecords(taggedRecords as (SalesRecord & { id: string; apiKeyId: string })[]);
 }
 
 /**
@@ -231,7 +233,9 @@ export async function fetchSalesData(params: FetchParams): Promise<FetchResult> 
  */
 async function getExistingDatesForKey(apiKeyId: string): Promise<Set<string>> {
   const dates = new Set<string>();
-  const records = await db.sales.where('apiKeyId').equals(apiKeyId).toArray();
+  // Note: This function is deprecated - use parsed-data module instead
+  const result = await getParsedRecords(1, 100000, { apiKeyIds: [apiKeyId] });
+  const records = result.data;
   for (const record of records) {
     dates.add(record.date);
   }

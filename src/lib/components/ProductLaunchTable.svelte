@@ -6,12 +6,8 @@
     calculateDayTotals,
     type LaunchMetricsResult,
   } from '$lib/utils/launch-metrics';
-  import {
-    generateCsv,
-    copyToClipboard as clipboardCopy,
-    downloadFile,
-    sanitizeFilename,
-  } from '$lib/utils/csv-export';
+  import { generateCsv, sanitizeFilename } from '$lib/utils/csv-export';
+  import { useCsvExport } from '$lib/utils/csv-export-hooks';
 
   interface Props {
     id: number;
@@ -40,8 +36,6 @@
     return calculateLaunchDays(records, maxDays);
   });
 
-  let copyFeedback = $state(false);
-
   function generateCsvContent(): string {
     const data = tableData;
     if (!data.launchDate || data.days.length === 0) return '';
@@ -68,23 +62,11 @@
     return generateCsv(headers, rows);
   }
 
-  async function copyToClipboard() {
-    const csvContent = generateCsvContent();
-    if (!csvContent) return;
-
-    const success = await clipboardCopy(csvContent);
-    if (success) {
-      copyFeedback = true;
-      setTimeout(() => (copyFeedback = false), 2000);
-    }
-  }
-
-  function downloadCsv() {
-    const csvContent = generateCsvContent();
-    if (!csvContent) return;
-
-    downloadFile(csvContent, `${sanitizeFilename(name)}_launch_report.csv`);
-  }
+  const {
+    copy: copyToClipboard,
+    download: downloadCsv,
+    copied: copyFeedback,
+  } = useCsvExport(generateCsvContent, () => `${sanitizeFilename(name)}_launch_report.csv`);
 
   // Calculate totals
   const totals = $derived(calculateDayTotals(tableData.days));

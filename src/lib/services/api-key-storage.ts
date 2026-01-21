@@ -1,13 +1,20 @@
-// API key storage operations for browser mode
-// Uses localStorage for persistence
+// API key storage operations
+// Metadata stored in Dexie, key values stored in localStorage (browser) or secure storage (Tauri)
 
 import { v4 as uuidv4 } from 'uuid';
 import type { ApiKeyInfo } from './types';
+import {
+  getAllApiKeys as getAllApiKeysFromDb,
+  addApiKeyMetadata,
+  updateApiKeyName as updateApiKeyNameInDb,
+  deleteApiKeyMetadata,
+} from '$lib/db/api-keys';
+import { isTauri } from '$lib/utils/tauri';
+import { invoke } from '@tauri-apps/api/core';
+import { setState, getState, deleteState } from '$lib/db/data-state';
 
-// Storage keys
-const API_KEYS_STORAGE_KEY = 'steam_api_keys'; // JSON array of ApiKeyInfo
+// Storage keys for browser mode
 const API_KEY_VALUES_PREFIX = 'steam_api_key_'; // Individual key values: steam_api_key_{id}
-const HIGHWATERMARK_PREFIX = 'highwatermark_'; // Per-key highwatermarks: highwatermark_{id}
 
 // Helper to generate UUID
 function generateId(): string {
@@ -20,23 +27,22 @@ function getKeyHash(key: string): string {
 }
 
 export async function getAllApiKeys(): Promise<ApiKeyInfo[]> {
-  const stored = localStorage.getItem(API_KEYS_STORAGE_KEY);
-  if (!stored) return [];
-  try {
-    const parsed = JSON.parse(stored);
-    // Ensure we always return an array
-    if (!Array.isArray(parsed)) {
-      console.warn('API keys storage was not an array, resetting');
-      return [];
-    }
-    return parsed as ApiKeyInfo[];
-  } catch {
-    return [];
-  }
+  // Metadata is now stored in Dexie
+  return getAllApiKeysFromDb();
 }
 
 export async function getApiKey(id: string): Promise<string | null> {
-  return localStorage.getItem(`${API_KEY_VALUES_PREFIX}${id}`);
+  if (isTauri()) {
+    // Use Tauri secure storage
+    try {
+      return await invoke('get_api_key', { id });
+    } catch {
+      return null;
+    }
+  } else {
+    // Use localStorage for browser mode
+    return localStorage.getItem(`${API_KEY_VALUES_PREFIX}${id}`);
+  }
 }
 
 export async function addApiKey(key: string, displayName?: string): Promise<ApiKeyInfo> {
@@ -49,61 +55,78 @@ export async function addApiKey(key: string, displayName?: string): Promise<ApiK
   };
 
   // Store the key value
-  localStorage.setItem(`${API_KEY_VALUES_PREFIX}${id}`, key);
-
-  // Add to keys list
-  let keys = await getAllApiKeys();
-  // Ensure keys is an array (defensive check)
-  if (!Array.isArray(keys)) {
-    console.warn('getAllApiKeys did not return an array, creating new array');
-    keys = [];
+  if (isTauri()) {
+    // Use Tauri secure storage
+    await invoke('add_api_key', { key, displayName: displayName || null });
+  } else {
+    // Use localStorage for browser mode
+    localStorage.setItem(`${API_KEY_VALUES_PREFIX}${id}`, key);
   }
-  keys.push(keyInfo);
-  localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(keys));
+
+  // Store metadata in Dexie
+  await addApiKeyMetadata(keyInfo);
 
   return keyInfo;
 }
 
 export async function updateApiKeyName(id: string, displayName: string): Promise<void> {
-  const keys = await getAllApiKeys();
-  if (!Array.isArray(keys)) throw new Error('API keys storage corrupted');
+  // Update metadata in Dexie
+  await updateApiKeyNameInDb(id, displayName);
 
-  const keyIndex = keys.findIndex((k) => k.id === id);
-  if (keyIndex === -1) throw new Error('API key not found');
-
-  keys[keyIndex].displayName = displayName;
-  localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(keys));
+  // Also update in Tauri if needed (Tauri stores display name separately)
+  if (isTauri()) {
+    try {
+      await invoke('update_api_key_name', { id, displayName });
+    } catch (error) {
+      console.warn('Failed to update API key name in Tauri:', error);
+    }
+  }
 }
 
 export async function deleteApiKey(id: string): Promise<void> {
   // Remove the key value
-  localStorage.removeItem(`${API_KEY_VALUES_PREFIX}${id}`);
-  // Remove the highwatermark
-  localStorage.removeItem(`${HIGHWATERMARK_PREFIX}${id}`);
+  if (isTauri()) {
+    await invoke('delete_api_key', { id });
+  } else {
+    localStorage.removeItem(`${API_KEY_VALUES_PREFIX}${id}`);
+  }
 
-  // Remove from keys list
-  const keys = await getAllApiKeys();
-  const filtered = keys.filter((k) => k.id !== id);
-  localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(filtered));
+  // Remove the highwatermark
+  await clearHighwatermark(id);
+
+  // Remove metadata from Dexie
+  await deleteApiKeyMetadata(id);
 }
 
 // Highwatermark management
+// Store highwatermarks in Dexie data_state for consistency
+const HIGHWATERMARK_KEY_PREFIX = 'highwatermark:';
+
 export async function getHighwatermark(apiKeyId: string): Promise<number> {
-  const stored = localStorage.getItem(`${HIGHWATERMARK_PREFIX}${apiKeyId}`);
-  return stored ? parseInt(stored, 10) : 0;
+  const key = `${HIGHWATERMARK_KEY_PREFIX}${apiKeyId}`;
+  const value = await getState(key);
+  return value ? parseInt(value, 10) : 0;
 }
 
 export async function setHighwatermark(apiKeyId: string, value: number): Promise<void> {
-  localStorage.setItem(`${HIGHWATERMARK_PREFIX}${apiKeyId}`, value.toString());
+  const key = `${HIGHWATERMARK_KEY_PREFIX}${apiKeyId}`;
+  await setState(key, value.toString());
 }
 
-export function clearHighwatermark(apiKeyId: string): void {
-  localStorage.removeItem(`${HIGHWATERMARK_PREFIX}${apiKeyId}`);
+export async function clearHighwatermark(apiKeyId: string): Promise<void> {
+  const key = `${HIGHWATERMARK_KEY_PREFIX}${apiKeyId}`;
+  await deleteState(key);
 }
 
 export function clearAllApiKeyStorage(): void {
-  // This is used during clearAllData
-  localStorage.removeItem(API_KEYS_STORAGE_KEY);
+  // Clear all API key values from localStorage (browser mode)
+  // Metadata is stored in Dexie and will be cleared by wipeAllData
+  const keys = Object.keys(localStorage);
+  for (const key of keys) {
+    if (key.startsWith(API_KEY_VALUES_PREFIX)) {
+      localStorage.removeItem(key);
+    }
+  }
 }
 
-export { API_KEY_VALUES_PREFIX, HIGHWATERMARK_PREFIX };
+export { API_KEY_VALUES_PREFIX };

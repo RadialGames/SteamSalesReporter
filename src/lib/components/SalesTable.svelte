@@ -1,10 +1,13 @@
 <script lang="ts">
-  import { salesStore, filterStore } from '$lib/stores/sales';
+  import { onMount } from 'svelte';
+  import { filterStore } from '$lib/stores/sales';
   import type { SalesRecord } from '$lib/services/types';
   import { formatCurrency, formatNumber } from '$lib/utils/formatters';
   import { getCountryName } from '$lib/utils/countries';
-  import { applyFilters } from '$lib/utils/filters';
+  import { getParsedRecords } from '$lib/db/parsed-data';
+  import { filterStoreToFilters } from '$lib/utils/filters';
   import Modal from './ui/Modal.svelte';
+  import EmptyState from './ui/EmptyState.svelte';
 
   type SortField = 'date' | 'appName' | 'countryCode' | 'grossUnitsSold' | 'netSalesUsd';
   type SortDirection = 'asc' | 'desc';
@@ -14,61 +17,92 @@
   let currentPage = $state(1);
   const pageSize = 25;
 
+  // Data state
+  let paginatedData = $state<SalesRecord[]>([]);
+  let totalRecords = $state(0);
+  let isLoading = $state(false);
+
   // Raw record modal state
   let selectedRecord = $state<SalesRecord | null>(null);
 
-  // Apply filters and sorting
-  const filteredData = $derived.by(() => {
-    // Use shared filter utility instead of duplicating filter logic
-    const data = applyFilters([...$salesStore], $filterStore);
+  // Load data for current page
+  async function loadPage(page: number) {
+    isLoading = true;
+    try {
+      const filters = $filterStore;
+      const dbFilters = filterStoreToFilters(filters);
 
-    // Apply sorting
-    data.sort((a, b) => {
-      let aVal: string | number;
-      let bVal: string | number;
+      const result = await getParsedRecords(page, pageSize, dbFilters);
+      paginatedData = result.data;
+      totalRecords = result.total;
 
-      switch (sortField) {
-        case 'date':
-          aVal = a.date;
-          bVal = b.date;
-          break;
-        case 'appName':
-          aVal = a.appName || `App ${a.appId}`;
-          bVal = b.appName || `App ${b.appId}`;
-          break;
-        case 'countryCode':
-          aVal = a.countryCode;
-          bVal = b.countryCode;
-          break;
-        case 'grossUnitsSold':
-          aVal = a.grossUnitsSold ?? 0;
-          bVal = b.grossUnitsSold ?? 0;
-          break;
-        case 'netSalesUsd':
-          aVal = a.netSalesUsd ?? 0;
-          bVal = b.netSalesUsd ?? 0;
-          break;
-        default:
-          return 0;
-      }
+      // Apply client-side sorting (database doesn't support all sort fields)
+      paginatedData.sort((a, b) => {
+        let aVal: string | number;
+        let bVal: string | number;
 
-      if (typeof aVal === 'string' && typeof bVal === 'string') {
-        return sortDirection === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
-      }
+        switch (sortField) {
+          case 'date':
+            aVal = a.date;
+            bVal = b.date;
+            break;
+          case 'appName':
+            aVal = a.appName || `App ${a.appId}`;
+            bVal = b.appName || `App ${b.appId}`;
+            break;
+          case 'countryCode':
+            aVal = a.countryCode;
+            bVal = b.countryCode;
+            break;
+          case 'grossUnitsSold':
+            aVal = a.grossUnitsSold ?? 0;
+            bVal = b.grossUnitsSold ?? 0;
+            break;
+          case 'netSalesUsd':
+            aVal = a.netSalesUsd ?? 0;
+            bVal = b.netSalesUsd ?? 0;
+            break;
+          default:
+            return 0;
+        }
 
-      return sortDirection === 'asc'
-        ? (aVal as number) - (bVal as number)
-        : (bVal as number) - (aVal as number);
-    });
+        if (typeof aVal === 'string' && typeof bVal === 'string') {
+          return sortDirection === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+        }
 
-    return data;
-  });
+        return sortDirection === 'asc'
+          ? (aVal as number) - (bVal as number)
+          : (bVal as number) - (aVal as number);
+      });
+    } catch (error) {
+      console.error('Error loading sales data:', error);
+    } finally {
+      isLoading = false;
+    }
+  }
 
   // Pagination
-  const totalPages = $derived(Math.ceil(filteredData.length / pageSize));
-  const paginatedData = $derived.by(() => {
-    const start = (currentPage - 1) * pageSize;
-    return filteredData.slice(start, start + pageSize);
+  const totalPages = $derived(Math.ceil(totalRecords / pageSize));
+
+  // Load data when page or filters change
+  $effect(() => {
+    currentPage;
+    $filterStore;
+    loadPage(currentPage);
+  });
+
+  // Reload when sort changes
+  $effect(() => {
+    sortField;
+    sortDirection;
+    if (paginatedData.length > 0) {
+      // Re-sort current page data
+      loadPage(currentPage);
+    }
+  });
+
+  onMount(() => {
+    loadPage(1);
   });
 
   function toggleSort(field: SortField) {
@@ -107,15 +141,15 @@
       Sales Records
     </h3>
     <span class="text-purple-300 text-sm">
-      {filteredData.length.toLocaleString()} records
+      {totalRecords.toLocaleString()} record{totalRecords === 1 ? '' : 's'}
+      {#if isLoading}
+        <span class="ml-2 inline-block animate-spin">&#10226;</span>
+      {/if}
     </span>
   </div>
 
-  {#if $salesStore.length === 0}
-    <div class="p-12 text-center text-purple-300">
-      <span class="text-4xl block mb-2">&#128202;</span>
-      <p>No data to display</p>
-    </div>
+  {#if totalRecords === 0 && !isLoading}
+    <EmptyState icon="&#128202;" title="No data to display" />
   {:else}
     <!-- Table -->
     <div class="overflow-x-auto">
@@ -221,7 +255,11 @@
         <div class="flex gap-2">
           <button
             class="px-3 py-1 rounded bg-purple-500/20 hover:bg-purple-500/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            onclick={() => (currentPage = Math.max(1, currentPage - 1))}
+            onclick={() => {
+              const prevPage = Math.max(1, currentPage - 1);
+              currentPage = prevPage;
+              loadPage(prevPage);
+            }}
             disabled={currentPage === 1}
           >
             &#9664; Prev
@@ -245,7 +283,10 @@
               class="w-8 h-8 rounded transition-colors {page === currentPage
                 ? 'bg-purple-500 text-white'
                 : 'bg-purple-500/20 hover:bg-purple-500/40'}"
-              onclick={() => (currentPage = page)}
+              onclick={() => {
+                currentPage = page;
+                loadPage(page);
+              }}
             >
               {page}
             </button>
@@ -253,7 +294,11 @@
 
           <button
             class="px-3 py-1 rounded bg-purple-500/20 hover:bg-purple-500/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            onclick={() => (currentPage = Math.min(totalPages, currentPage + 1))}
+            onclick={() => {
+              const nextPage = Math.min(totalPages, currentPage + 1);
+              currentPage = nextPage;
+              loadPage(nextPage);
+            }}
             disabled={currentPage === totalPages}
           >
             Next &#9654;

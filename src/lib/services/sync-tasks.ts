@@ -83,6 +83,11 @@ export interface SyncTaskService {
   clearCompletedTasks(): Promise<void>;
 
   /**
+   * Clear ALL sync tasks (used after bulk processing)
+   */
+  clearAllSyncTasks(): Promise<void>;
+
+  /**
    * Delete all sync tasks for a specific API key
    */
   deleteSyncTasksForKey(apiKeyId: string): Promise<void>;

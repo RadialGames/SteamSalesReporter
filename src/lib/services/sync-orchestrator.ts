@@ -1,11 +1,11 @@
 // Sync orchestrator for coordinating multi-key Steam sales data synchronization
 // Uses a 3-phase approach: (1) discover dates, (2) populate data, (3) compute aggregates
 
-import type { ApiKeyInfo, SalesService } from './types';
-import type { SyncTask, SyncTaskService } from './sync-tasks';
-import { computeAndStoreAggregates } from '$lib/db/dexie';
+import type { ApiKeyInfo, SalesService, SalesRecord } from './types';
+import type { SyncTaskService } from './sync-tasks';
+import { processDataForcefully } from '$lib/db/data-processor';
 import { fetchSalesForDate, SyncCancelledError } from './steam-api-client';
-import { saveSalesWithOverwrite } from './sync-service';
+import { storeParsedRecords } from '$lib/db/parsed-data';
 import { services as defaultServices, syncTaskService as defaultSyncTaskService } from './index';
 
 export { SyncCancelledError };
@@ -108,15 +108,20 @@ export class SyncOrchestrator {
    * Phase 1: Discovery
    * - For each API key, call GetChangedDatesForPartner
    * - Create TODO entries in the database
-   * - Save highwatermark immediately
+   * - Collect highwatermarks to save after successful completion
    * - Count total TODO items
    */
   private async discoverChangedDates(
     apiKeys: ApiKeyInfo[],
     callbacks: SyncCallbacks
-  ): Promise<{ totalDates: number; keySegments: KeySegment[] }> {
+  ): Promise<{
+    totalDates: number;
+    keySegments: KeySegment[];
+    pendingHighwatermarks: Map<string, number>;
+  }> {
     let totalDates = 0;
     const keySegments: KeySegment[] = [];
+    const pendingHighwatermarks = new Map<string, number>();
 
     for (let i = 0; i < apiKeys.length; i++) {
       const keyInfo = apiKeys[i];
@@ -146,8 +151,8 @@ export class SyncOrchestrator {
         // This also deletes existing sales data for these dates
         await this.syncTaskService.createSyncTasks(keyInfo.id, dates);
 
-        // Save highwatermark immediately after creating tasks
-        await this.services.setHighwatermark(keyInfo.id, newHighwatermark);
+        // Store highwatermark to save after successful completion
+        pendingHighwatermarks.set(keyInfo.id, newHighwatermark);
 
         totalDates += dates.length;
       }
@@ -169,36 +174,26 @@ export class SyncOrchestrator {
       });
     }
 
-    return { totalDates, keySegments };
+    return { totalDates, keySegments, pendingHighwatermarks };
   }
 
   /**
-   * Process a single task: fetch all sales data for a date
-   */
-  private async processTask(task: SyncTask, apiKey: string, signal?: AbortSignal): Promise<number> {
-    // Acquire HTTP semaphore to limit concurrent requests
-    await this.httpSemaphore.acquire();
-    try {
-      // Fetch all sales for this date (handles pagination internally)
-      const sales = await fetchSalesForDate(apiKey, task.apiKeyId, task.date, signal);
-
-      // Save to database (this can happen concurrently, no semaphore needed)
-      if (sales.length > 0) {
-        await saveSalesWithOverwrite(sales, task.apiKeyId);
-      }
-
-      return sales.length;
-    } finally {
-      // Always release semaphore, even on error
-      this.httpSemaphore.release();
-    }
-  }
-
-  /**
-   * Phase 2: Populate Data
-   * - Get all pending tasks from database
-   * - Process in parallel batches
-   * - Mark as done after completion
+   * Phase 2: Populate Data - Progress-First Architecture
+   *
+   * Progress updates are based on HTTP fetch completions (fast, ~100ms each),
+   * while DB writes happen asynchronously in the background.
+   *
+   * This gives smooth progress updates regardless of DB write speed.
+   *
+   * 1. HTTP Worker Pool (8 concurrent):
+   *    - Fetches data, parses JSON in memory
+   *    - Updates progress immediately on each completion
+   *    - Queues records for DB writing
+   *
+   * 2. DB Writer (background):
+   *    - Batches records and writes to SQLite
+   *    - Does NOT block progress updates
+   *    - Waits for completion at the end
    */
   private async populateData(
     keySegments: KeySegment[],
@@ -212,19 +207,14 @@ export class SyncOrchestrator {
     }
 
     // Sort tasks: first by API key, then by date
-    // This ensures all tasks for one API key are processed before moving to the next
     const sortedTasks = [...allTasks].sort((a, b) => {
-      // Primary sort: by API key ID
       if (a.apiKeyId !== b.apiKeyId) {
         return a.apiKeyId.localeCompare(b.apiKeyId);
       }
-      // Secondary sort: by date (chronological)
       return a.date.localeCompare(b.date);
     });
 
     const totalTasks = sortedTasks.length;
-    let completedTasks = 0;
-    let totalRecords = 0;
 
     // Build a map of apiKeyId -> apiKey for quick lookup
     const apiKeyMap = new Map<string, string>();
@@ -235,115 +225,177 @@ export class SyncOrchestrator {
       }
     }
 
-    // Create a queue of pending tasks for the worker pool (already sorted)
-    const taskQueue = [...sortedTasks];
+    // === Shared State ===
+    let completedHttpTasks = 0;
+    let totalRecordsFetched = 0;
+    let taskIndex = 0;
     let cancelled = false;
 
-    // Worker function - processes tasks from the queue until empty
-    const runWorker = async (workerId: number): Promise<void> => {
-      while (taskQueue.length > 0 && !cancelled) {
-        // Check if cancelled
-        if (callbacks.getAbortSignal()?.aborted) {
-          cancelled = true;
-          return;
-        }
+    // Queue for DB writes - records accumulate here while HTTP fetches continue
+    const dbWriteQueue: (SalesRecord & { id: string; apiKeyId: string })[] = [];
+    let dbWriteInProgress = false;
+    let dbWritePromise: Promise<void> | null = null;
+    let totalRecordsWritten = 0;
 
-        // Take next task from queue
-        const task = taskQueue.shift();
-        if (!task) break;
+    // === DB Writer Function (non-blocking) ===
+    const flushDbQueue = async (): Promise<void> => {
+      if (dbWriteInProgress || dbWriteQueue.length === 0) return;
 
-        // Get API key for this task
+      dbWriteInProgress = true;
+
+      // Take all records from queue
+      const recordsToWrite = dbWriteQueue.splice(0, dbWriteQueue.length);
+
+      try {
+        await storeParsedRecords(recordsToWrite);
+        totalRecordsWritten += recordsToWrite.length;
+      } catch (err) {
+        console.error('Error writing records to DB:', err);
+      }
+
+      dbWriteInProgress = false;
+
+      // If more records accumulated while we were writing, flush again
+      if (dbWriteQueue.length > 0) {
+        dbWritePromise = flushDbQueue();
+      }
+    };
+
+    // === HTTP Worker Function ===
+    const processOneTask = async (): Promise<void> => {
+      while (taskIndex < sortedTasks.length && !cancelled) {
+        const myTaskIndex = taskIndex++;
+        const task = sortedTasks[myTaskIndex];
+
         const apiKey = apiKeyMap.get(task.apiKeyId);
         if (!apiKey) {
-          console.warn(`No API key found for task ${task.id}`);
-          completedTasks++;
-          callbacks.onProgress({
-            phase: 'populate',
-            message: `Fetching sales data...`,
-            completedTasks,
-            totalTasks,
-            currentDate: task.date,
-            recordsFetched: totalRecords,
-            keySegments,
-          });
+          completedHttpTasks++;
           continue;
         }
 
         try {
-          // Mark task as in_progress
-          await this.syncTaskService.markTaskInProgress(task.id);
+          // Check cancellation
+          if (callbacks.getAbortSignal()?.aborted) {
+            cancelled = true;
+            return;
+          }
 
-          // Process the task
-          const records = await this.processTask(task, apiKey, callbacks.getAbortSignal());
+          // HTTP fetch (fast, ~100ms) - fetchSalesForDate now stores raw responses internally
+          const salesRecords = await fetchSalesForDate(
+            apiKey,
+            task.apiKeyId,
+            task.date,
+            callbacks.getAbortSignal()
+          );
 
-          // Mark task as done
-          await this.syncTaskService.markTaskDone(task.id);
+          // Build records and add to DB write queue
+          for (const record of salesRecords) {
+            if (record.id) {
+              dbWriteQueue.push({
+                ...record,
+                id: record.id as string,
+                apiKeyId: task.apiKeyId,
+                date: record.date,
+              });
+            }
+          }
 
-          // Update counters
-          totalRecords += records;
-          completedTasks++;
+          totalRecordsFetched += salesRecords.length;
+          completedHttpTasks++;
 
-          // Update progress immediately
+          // Update progress immediately (based on HTTP completion, not DB)
           callbacks.onProgress({
             phase: 'populate',
             message: `Fetching sales data...`,
-            completedTasks,
+            completedTasks: completedHttpTasks,
             totalTasks,
             currentDate: task.date,
-            recordsFetched: totalRecords,
+            recordsFetched: totalRecordsFetched,
             keySegments,
           });
+
+          // Trigger DB write if queue is getting large (fire and forget)
+          if (dbWriteQueue.length >= 200 && !dbWriteInProgress) {
+            dbWritePromise = flushDbQueue();
+          }
         } catch (err) {
           if (err instanceof SyncCancelledError) {
             cancelled = true;
-            throw err;
+            return;
           }
-          console.error(`Error processing task ${task.id}:`, err);
-
-          // Still mark as done and update progress on error
-          await this.syncTaskService.markTaskDone(task.id);
-          completedTasks++;
+          completedHttpTasks++;
+          // Update progress even on error
           callbacks.onProgress({
             phase: 'populate',
             message: `Fetching sales data...`,
-            completedTasks,
+            completedTasks: completedHttpTasks,
             totalTasks,
             currentDate: task.date,
-            recordsFetched: totalRecords,
+            recordsFetched: totalRecordsFetched,
             keySegments,
           });
         }
       }
     };
 
-    // Launch up to parallelBatchSize concurrent workers
-    const numWorkers = Math.min(this.parallelBatchSize, allTasks.length);
-    const workers: Promise<void>[] = [];
+    // === Launch HTTP workers ===
+    const httpWorkerPromises: Promise<void>[] = [];
+    const numWorkers = Math.min(this.maxConcurrentHttpRequests, sortedTasks.length);
+
     for (let i = 0; i < numWorkers; i++) {
-      workers.push(runWorker(i));
+      httpWorkerPromises.push(processOneTask());
     }
 
-    // Wait for all workers to complete
-    await Promise.all(workers);
+    // Wait for all HTTP workers to finish
+    await Promise.all(httpWorkerPromises);
 
     // Check if we were cancelled
     if (cancelled) {
       throw new SyncCancelledError();
     }
 
-    return { totalRecords, totalTasks };
+    // === Final DB flush ===
+    // Wait for any in-progress DB write to complete
+    if (dbWritePromise) {
+      await dbWritePromise;
+    }
+
+    // Flush remaining records
+    if (dbWriteQueue.length > 0) {
+      // Update progress to show we're saving
+      callbacks.onProgress({
+        phase: 'populate',
+        message: `Saving ${dbWriteQueue.length} records to database...`,
+        completedTasks: completedHttpTasks,
+        totalTasks,
+        currentDate: 'finalizing',
+        recordsFetched: totalRecordsFetched,
+        keySegments,
+      });
+
+      await flushDbQueue();
+
+      // Wait for final write to complete
+      if (dbWritePromise) {
+        await dbWritePromise;
+      }
+    }
+
+    // Clean up: clear all sync tasks
+    await this.syncTaskService.clearAllSyncTasks();
+
+    return { totalRecords: totalRecordsWritten, totalTasks };
   }
 
   /**
-   * Phase 3: Compute Aggregates
+   * Phase 3: Compute Aggregates and Display Cache
+   * Uses the centralized data processor for consistent handling
    */
   private async computeAggregates(
     totalRecords: number,
     keySegments: KeySegment[],
     callbacks: SyncCallbacks
   ): Promise<void> {
-    if (totalRecords === 0) return;
-
     callbacks.onProgress({
       phase: 'aggregates',
       message: 'Computing aggregates for faster loading...',
@@ -351,15 +403,18 @@ export class SyncOrchestrator {
       keySegments,
     });
 
-    await computeAndStoreAggregates((message, progress) => {
-      callbacks.onProgress({
-        phase: 'aggregates',
-        message,
-        completedTasks: progress,
-        totalTasks: 100,
-        recordsFetched: totalRecords,
-        keySegments,
-      });
+    // Use centralized processor - handles all parsing, aggregates, and display cache
+    await processDataForcefully({
+      onProgress: (message, progress) => {
+        callbacks.onProgress({
+          phase: 'aggregates',
+          message,
+          completedTasks: progress,
+          totalTasks: 100,
+          recordsFetched: totalRecords,
+          keySegments,
+        });
+      },
     });
   }
 
@@ -376,7 +431,10 @@ export class SyncOrchestrator {
       discoveredDates: 0,
     });
 
-    const { keySegments } = await this.discoverChangedDates(apiKeys, callbacks);
+    const { keySegments, pendingHighwatermarks } = await this.discoverChangedDates(
+      apiKeys,
+      callbacks
+    );
 
     // Also count any existing pending tasks from previous incomplete syncs
     const existingPendingCount = await this.syncTaskService.countAllPendingTasks();
@@ -416,6 +474,11 @@ export class SyncOrchestrator {
 
     // Clean up completed tasks
     await this.syncTaskService.clearCompletedTasks();
+
+    // Save highwatermarks now that sync completed successfully
+    for (const [apiKeyId, highwatermark] of pendingHighwatermarks) {
+      await this.services.setHighwatermark(apiKeyId, highwatermark);
+    }
 
     // Done
     callbacks.onProgress({

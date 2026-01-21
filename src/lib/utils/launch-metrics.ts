@@ -2,6 +2,7 @@
 // Aggregates sales data by day offset from product launch
 
 import type { SalesRecord } from '$lib/services/types';
+import { calculateNetUnitsFromValues } from '$lib/utils/calculations';
 
 /**
  * Data for a single day relative to launch
@@ -158,4 +159,18 @@ export function calculateDayTotals(days: DayData[]): DayTotals {
     }),
     { sold: 0, returned: 0, activated: 0, bundle: 0, netRevenue: 0 }
   );
+}
+
+/**
+ * Calculate net units for a single day using centralized formula
+ */
+export function calculateDayNetUnits(day: DayData): number {
+  return calculateNetUnitsFromValues(day.sold, day.activated, day.returned);
+}
+
+/**
+ * Calculate net units from totals using centralized formula
+ */
+export function calculateTotalsNetUnits(totals: DayTotals): number {
+  return calculateNetUnitsFromValues(totals.sold, totals.activated, totals.returned);
 }

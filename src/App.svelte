@@ -6,11 +6,17 @@
   import UnicornLoader from '$lib/components/UnicornLoader.svelte';
   import { services, syncTaskService } from '$lib/services';
   import type { SyncProgress } from '$lib/services/types';
+  import { initializeDatabase } from '$lib/db/sqlite';
+  import { isParsingInProgress, clearParsingInProgress } from '$lib/db/data-state';
+  import { resetParsingRecords, getUnparsedRawData } from '$lib/db/raw-data';
+  import { getDisplayCache } from '$lib/db/display-cache';
   import {
-    initializeDatabase,
-    aggregatesNeedUpdate,
-    computeAndStoreAggregates,
-  } from '$lib/db/dexie';
+    processDataIfDirty,
+    processDataForcefully,
+    processDataIncrementally,
+    getUnparsedRawDataCount,
+    processRemainingDataInBackground,
+  } from '$lib/db/data-processor';
   import { salesStore, settingsStore, isLoading, errorMessage } from '$lib/stores/sales';
   import type { ApiKeyInfo } from '$lib/services/types';
   import { SyncOrchestrator, isCancellationError } from '$lib/services/sync-orchestrator';
@@ -28,6 +34,8 @@
 
   // Track if we're in a paused state with pending work
   let hasPendingWork = $state(false);
+  // Track if cancellation has been initiated to prevent progress updates from overwriting cancelled state
+  let isCancelling = $state(false);
 
   let loadingMessage = $state('Initializing...');
   let loadingProgress = $state(0);
@@ -76,22 +84,51 @@
       console.log('Found pending sync tasks from previous session');
     }
 
-    // Check if aggregates need to be recomputed (safety net for pause/cancel/crash scenarios)
-    // This ensures dashboard data is always accurate even if sync was interrupted
-    if (await aggregatesNeedUpdate()) {
-      loadingMessage = 'Updating aggregates...';
-      loadingProgress = 52;
-      await computeAndStoreAggregates((message, progress) => {
+    // Crash recovery: Check if parsing was in progress
+    loadingMessage = 'Checking for interrupted operations...';
+    loadingProgress = 52;
+    if (await isParsingInProgress()) {
+      loadingMessage = 'Recovering from interrupted parsing...';
+      const parsingResetCount = await resetParsingRecords();
+      if (parsingResetCount > 0) {
+        console.log(`Reset ${parsingResetCount} parsing records for recovery`);
+      }
+      await clearParsingInProgress();
+    }
+
+    // Process limited data on startup for fast loading (max 50 responses)
+    loadingMessage = 'Processing data...';
+    loadingProgress = 53;
+    const processingResult = await processDataIncrementally(50, {
+      onProgress: (message, progress) => {
         loadingMessage = message;
-        // Map aggregate progress (0-100) to range 52-54%
-        loadingProgress = 52 + Math.round(progress * 0.02);
-      });
+        // Map processing progress (0-100) to 53-60 range
+        loadingProgress = 53 + Math.round(progress * 0.07);
+      },
+    });
+    if (processingResult.parsedResponses > 0) {
+      console.log(
+        `Parsed ${processingResult.parsedResponses} raw responses (${processingResult.parsedRecords} records)`
+      );
     }
 
     // Check if API keys exist
     loadingMessage = 'Checking settings...';
-    loadingProgress = 55;
+    loadingProgress = 60;
     await loadApiKeys();
+
+    // Start background processing of remaining data (don't wait for it)
+    const remainingCount = await getUnparsedRawDataCount();
+    if (remainingCount > 0) {
+      console.log(`Starting background processing of ${remainingCount} remaining responses...`);
+      // Don't await - let it run in background
+      processRemainingDataInBackground(100, (message, _remaining) => {
+        console.log(`Background: ${message}`);
+        // Could update a store here if we want to show background progress
+      }).catch((error) => {
+        console.error('Background processing failed:', error);
+      });
+    }
 
     if (apiKeys.length === 0 || !apiKeys[0]) {
       showApiKeyModal = true;
@@ -104,34 +141,35 @@
         settingsStore.setApiKey(firstKey);
       }
 
-      // Load existing data from database with progress indication
-      loadingMessage = 'Loading sales data...';
-      loadingProgress = 60;
+      // Load from display cache instead of all records
+      loadingMessage = 'Loading dashboard...';
+      loadingProgress = 85;
 
       try {
-        const existingData = await services.getSalesFromDb({});
-        loadingProgress = 85;
-
-        if (existingData.length > 0) {
-          loadingMessage = `Processing ${existingData.length.toLocaleString()} records...`;
-          // Give UI time to update before potentially heavy store operation
-          await new Promise((resolve) => setTimeout(resolve, 0));
-          salesStore.setData(existingData);
+        // Try to load dashboard stats from display cache
+        const dashboardStats = await getDisplayCache('dashboard_stats');
+        if (dashboardStats) {
+          // Display cache exists - instant load
+          // Note: salesStore is now only used for filtered/paginated views
+          // Dashboard components will read from display cache directly
           loadingProgress = 100;
         } else {
+          // No display cache yet - will be computed on first sync
           loadingProgress = 100;
         }
       } catch (error) {
-        console.error('Error loading data:', error);
-        errorMessage.set('Failed to load existing data. Please try refreshing.');
+        console.error('Error loading display cache:', error);
+        errorMessage.set('Failed to load dashboard data. Please try refreshing.');
       }
 
       isInitialized = true;
     }
   });
 
+  let dashboardRefreshKey = $state(0);
+
   async function handleKeysChanged() {
-    // Reload API keys and data after changes
+    // Reload API keys after changes
     await loadApiKeys();
     const firstKeyInfo = apiKeys[0];
     if (firstKeyInfo) {
@@ -139,12 +177,18 @@
       if (firstKey) {
         settingsStore.setApiKey(firstKey);
       }
-      const existingData = await services.getSalesFromDb({});
-      salesStore.setData(existingData);
+      // Note: salesStore is no longer used for full data loading
+      // Dashboard components read from display cache directly
     } else {
       settingsStore.setApiKey(null);
-      salesStore.setData([]);
+      salesStore.clear();
     }
+
+    // Process any dirty data (e.g., after data wipe)
+    await processDataIfDirty();
+
+    // Force Dashboard to refresh by incrementing key
+    dashboardRefreshKey++;
   }
 
   async function handleRefreshData() {
@@ -154,7 +198,20 @@
     }
 
     // Check if we're resuming from a paused state with pending work
-    const isResuming = refreshProgress.phase === 'cancelled' && hasPendingWork;
+    // Only treat as resume if modal is still open (user clicked resume button)
+    // If modal was closed, treat as fresh start
+    const isResuming = showProgressModal && refreshProgress.phase === 'cancelled' && hasPendingWork;
+
+    // Reset cancellation flag for new sync
+    isCancelling = false;
+
+    // If not resuming, reset progress state to ensure fresh start
+    if (!isResuming) {
+      refreshProgress = {
+        phase: 'discovery',
+        message: 'Preparing...',
+      };
+    }
 
     // Create new abort controller for this sync
     abortController = new AbortController();
@@ -165,6 +222,47 @@
     errorMessage.set(null);
 
     try {
+      // Check if there's unparsed raw data (e.g., after wiping processed data)
+      // If so, skip API calls and just reprocess the existing raw data
+      const unparsedRawData = await getUnparsedRawData();
+
+      if (unparsedRawData.length > 0 && !isResuming) {
+        // We have raw data to reprocess - skip API sync and go straight to processing
+        refreshProgress = {
+          phase: 'aggregates',
+          message: `Reprocessing ${unparsedRawData.length} raw API responses...`,
+          totalTasks: 100,
+          completedTasks: 0,
+          recordsFetched: 0,
+        };
+
+        await processDataForcefully({
+          onProgress: (message, progressPercent) => {
+            if (!abortController?.signal.aborted) {
+              refreshProgress = {
+                phase: 'aggregates',
+                message,
+                totalTasks: 100,
+                completedTasks: progressPercent,
+                recordsFetched: 0,
+              };
+            }
+          },
+        });
+
+        // Show complete status
+        refreshProgress = {
+          phase: 'complete',
+          message: `Reprocessed ${unparsedRawData.length} raw responses!`,
+          totalTasks: 100,
+          completedTasks: 100,
+          recordsFetched: 0,
+        };
+        hasPendingWork = false;
+        return;
+      }
+
+      // No unparsed raw data - proceed with normal sync (fetch from API)
       // Create orchestrator with batch size of 100
       // Note: Each task makes HTTP requests. With HTTP/2, we can handle many concurrent
       // requests. Port exhaustion is not a concern as browsers manage connection pooling.
@@ -178,14 +276,51 @@
 
       const { totalRecords, totalTasks } = await syncFn(apiKeys, {
         onProgress: (progress) => {
-          refreshProgress = progress;
+          // Never allow overwriting cancelled state with any other phase
+          // This prevents late-arriving progress updates from overwriting user-initiated cancellation
+          if (refreshProgress.phase === 'cancelled' && progress.phase !== 'cancelled') {
+            return;
+          }
+          // Don't overwrite cancelled state if cancellation has been initiated
+          if (!isCancelling || progress.phase === 'cancelled') {
+            refreshProgress = progress;
+          }
         },
         getAbortSignal: () => abortController?.signal,
       });
 
-      // Always reload all data from database after sync
-      const allData = await services.getSalesFromDb({});
-      salesStore.setData(allData);
+      // Always run data recalculation, even if no new data was synced
+      // When totalTasks === 0, the sync orchestrator skipped the aggregates phase,
+      // so we need to run it here. When totalTasks > 0, the sync orchestrator already
+      // ran it, but we run it again to ensure it's always fresh.
+      if (!abortController?.signal.aborted) {
+        refreshProgress = {
+          phase: 'aggregates',
+          message: 'Recalculating aggregates and display cache...',
+          totalTasks,
+          completedTasks: totalTasks,
+          recordsFetched: totalRecords,
+        };
+
+        await processDataForcefully({
+          onProgress: (message, progressPercent) => {
+            if (!abortController?.signal.aborted) {
+              refreshProgress = {
+                phase: 'aggregates',
+                message,
+                // Use completedTasks/totalTasks to show aggregation progress (0-100 scale)
+                totalTasks: 100,
+                completedTasks: progressPercent,
+                recordsFetched: totalRecords,
+              };
+            }
+          },
+        });
+      }
+
+      // Note: No need to reload all data into salesStore
+      // Display cache will be updated by the sync orchestrator
+      // Components read from display cache directly
 
       // Clear pending work flag on successful completion
       hasPendingWork = false;
@@ -196,32 +331,34 @@
         message:
           totalRecords > 0
             ? `Synced ${totalRecords.toLocaleString()} records!`
-            : 'Already up to date!',
+            : 'Recalculation complete!',
         totalTasks,
         completedTasks: totalTasks,
         recordsFetched: totalRecords,
       };
     } catch (err) {
       if (isCancellationError(err)) {
-        // Reload any data that was saved before cancellation
-        const allData = await services.getSalesFromDb({});
-        salesStore.setData(allData);
+        // Note: No need to reload all data
+        // Display cache will be updated when sync completes or resumes
 
         // Check if there's still pending work
         const orchestrator = new SyncOrchestrator(services, syncTaskService, 10);
         hasPendingWork = await orchestrator.hasPendingTasks();
 
-        refreshProgress = {
-          phase: 'cancelled',
-          message:
-            allData.length > 0
-              ? `Sync paused. ${allData.length.toLocaleString()} records loaded so far.`
-              : 'Sync was paused.',
-          completedTasks: refreshProgress.completedTasks,
-          totalTasks: refreshProgress.totalTasks,
-          recordsFetched: refreshProgress.recordsFetched,
-          keySegments: refreshProgress.keySegments,
-        };
+        // Only update to cancelled if not already cancelled (to avoid overwriting user's immediate feedback)
+        if (refreshProgress.phase !== 'cancelled') {
+          refreshProgress = {
+            phase: 'cancelled',
+            message:
+              refreshProgress.recordsFetched && refreshProgress.recordsFetched > 0
+                ? `Sync paused. ${refreshProgress.recordsFetched.toLocaleString()} records loaded so far.`
+                : 'Sync was paused.',
+            completedTasks: refreshProgress.completedTasks,
+            totalTasks: refreshProgress.totalTasks,
+            recordsFetched: refreshProgress.recordsFetched,
+            keySegments: refreshProgress.keySegments,
+          };
+        }
       } else {
         console.error('Error refreshing data:', err);
         const errorMsg = err instanceof Error ? err.message : 'Failed to fetch data';
@@ -239,19 +376,54 @@
     } finally {
       isLoading.set(false);
       abortController = null;
+      // Reset cancellation flag when sync ends (whether cancelled or not)
+      // We'll reset it at the start of the next sync anyway, but this ensures clean state
+      isCancelling = false;
     }
   }
 
   function handleAbortSync() {
     if (abortController) {
+      // Set cancellation flag to prevent progress updates from overwriting cancelled state
+      isCancelling = true;
+      // Immediately update UI to show cancelled state
+      refreshProgress = {
+        ...refreshProgress,
+        phase: 'cancelled',
+        message:
+          refreshProgress.recordsFetched && refreshProgress.recordsFetched > 0
+            ? `Sync paused. ${refreshProgress.recordsFetched.toLocaleString()} records loaded so far.`
+            : 'Sync was paused.',
+      };
+      // Then abort the controller
       abortController.abort();
     }
   }
 
-  function closeProgressModal() {
+  async function closeProgressModal() {
+    const wasPaused = refreshProgress.phase === 'cancelled';
+    const wasCompleted = refreshProgress.phase === 'complete';
     showProgressModal = false;
+    // Reset progress state when closing modal to prevent stale state
+    // If phase is 'cancelled', reset to initial state so next sync starts fresh
+    if (refreshProgress.phase === 'cancelled' || refreshProgress.phase === 'error') {
+      refreshProgress = {
+        phase: 'discovery',
+        message: 'Preparing...',
+      };
+    }
+    // Ensure isLoading is reset (should already be false from finally block, but be safe)
+    isLoading.set(false);
     // Note: We keep hasPendingWork flag - tasks are persisted in DB
     // Next "Refresh Data" will discover them and offer to resume
+
+    // If sync was paused or completed, refresh dashboard to show any new data
+    if (wasPaused || wasCompleted) {
+      // Process any dirty data (aggregates and display cache)
+      await processDataIfDirty();
+      // Force Dashboard to refresh
+      dashboardRefreshKey++;
+    }
   }
 
   function openSettings() {
@@ -328,7 +500,9 @@
 
       <!-- Dashboard -->
       <main class="p-6">
-        <Dashboard />
+        {#key dashboardRefreshKey}
+          <Dashboard />
+        {/key}
       </main>
     {/if}
   </div>

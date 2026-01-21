@@ -1,41 +1,19 @@
 /**
  * Worker Manager for Background Aggregation Computations
  *
- * ## Aggregation Strategy Overview
+ * All heavy computations are offloaded to a Web Worker to keep the UI responsive.
+ * This avoids blocking the main thread and prevents Svelte 5 reactive proxy overhead.
  *
- * This app uses three different approaches for computing aggregations,
- * each optimized for different scenarios:
+ * ## Usage
  *
- * ### 1. Real-time Derived Stores (src/lib/stores/sales.ts)
- * - **When:** Small datasets (<50k records) with active user filtering
- * - **How:** Svelte derived stores recompute on every filter change
- * - **Pros:** Immediate feedback, simple implementation
- * - **Cons:** Blocks UI thread, slow for large datasets
+ * - `computeProductGroups()` - For Launch Comparison product grouping
+ * - `computeAggregates()` - For computing daily/app/country summaries
  *
- * ### 2. Web Worker (this file + aggregation.worker.ts)
- * - **When:** Large datasets (>=50k records) during active UI interaction
- * - **How:** Offloads computation to a background thread
- * - **Pros:** Non-blocking UI, handles large datasets
- * - **Cons:** Message passing overhead, async complexity
+ * ## Why Always Use Workers
  *
- * ### 3. Pre-computed IndexedDB Aggregates (src/lib/db/dexie.ts)
- * - **When:** After data sync, for initial load
- * - **How:** Computes once and stores in IndexedDB tables
- * - **Pros:** Instant reads, no recomputation needed
- * - **Cons:** Stale until recomputed, storage overhead
- *
- * ## Threshold Configuration
- *
- * The WORKER_THRESHOLD (50,000 records) determines when to use the worker.
- * Below this threshold, synchronous computation is fast enough.
- * Above this threshold, the worker prevents UI blocking.
- *
- * ## Usage Guidelines
- *
- * - For interactive filtering: Use derived stores (auto-handles small datasets)
- * - For Launch Comparison: Use computeProductGroups() (auto-selects worker/sync)
- * - After data sync: Call computeAndStoreAggregates() in dexie.ts
- * - For initial app load: Read from pre-computed IndexedDB tables
+ * 1. **UI Responsiveness** - Never blocks the main thread
+ * 2. **Proxy Overhead** - Svelte 5 proxies are slow; worker receives plain objects via postMessage
+ * 3. **Consistent Behavior** - No threshold edge cases or unexpected slowdowns
  */
 
 import type {
@@ -84,18 +62,6 @@ export interface ComputeOptions {
   signal?: AbortSignal;
 }
 
-/**
- * Threshold for using Web Worker vs synchronous computation.
- *
- * IMPORTANT: We use a low threshold because Svelte 5's reactive proxies
- * make iteration extremely slow (~0.5ms per record). The Web Worker
- * receives serialized plain objects via postMessage, avoiding proxy overhead.
- *
- * - Below 5k records: Sync computation is acceptable (~500ms with proxy)
- * - Above 5k records: Worker is used to avoid proxy overhead
- */
-const WORKER_THRESHOLD = 5000;
-
 let worker: Worker | null = null;
 
 // Extended pending request tracking with progress callback and timeout management
@@ -110,6 +76,58 @@ interface PendingRequest<T = unknown> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Generic map storing requests of various types
 const pendingRequests = new Map<string, PendingRequest<any>>();
 let requestId = 0;
+
+/**
+ * Safe deep clone for worker communication
+ * Handles SalesRecord arrays and other data structures safely
+ */
+function safeClone(data: unknown, seen = new WeakSet()): unknown {
+  // Prevent infinite recursion with circular references
+  if (data === null || data === undefined) {
+    return data;
+  }
+
+  if (typeof data === 'string' || typeof data === 'number' || typeof data === 'boolean') {
+    return data;
+  }
+
+  // Check for circular references
+  if (typeof data === 'object') {
+    if (seen.has(data)) {
+      return null; // Replace circular references with null
+    }
+    seen.add(data);
+  }
+
+  if (Array.isArray(data)) {
+    const result = data.map((item) => safeClone(item, seen));
+    seen.delete(data); // Clean up after processing
+    return result;
+  }
+
+  if (typeof data === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
+      // Skip functions, symbols, and other non-serializable properties
+      if (typeof value !== 'function' && typeof value !== 'symbol') {
+        // Skip properties that start with $ (Svelte internal)
+        if (!key.startsWith('$') && !key.startsWith('_')) {
+          result[key] = safeClone(value, seen);
+        }
+      }
+    }
+    seen.delete(data); // Clean up after processing
+    return result;
+  }
+
+  // For any other type (like Date, etc.), try to convert to a serializable form
+  try {
+    return JSON.parse(JSON.stringify(data));
+  } catch {
+    // If JSON serialization fails, return null
+    return null;
+  }
+}
 
 // Base timeout and extension per progress update
 const BASE_TIMEOUT_MS = 30000;
@@ -131,7 +149,7 @@ function getWorker(): Worker {
         const pending = pendingRequests.get(id);
         if (pending) {
           if (pending.timeoutId) clearTimeout(pending.timeoutId);
-          pending.reject(new Error(error));
+          pending.reject(new Error(`Worker error: ${error}`));
           pendingRequests.delete(id);
         }
         return;
@@ -232,7 +250,15 @@ function sendToWorker<T>(type: string, data: unknown, options?: ComputeOptions):
     }
 
     const w = getWorker();
-    w.postMessage({ type, data, id });
+
+    // Try to send data directly first, fall back to safe clone if needed
+    try {
+      w.postMessage({ type, data, id });
+    } catch (error) {
+      console.warn('Direct postMessage failed, trying safe clone:', error);
+      const plainData = safeClone(data);
+      w.postMessage({ type, data: plainData, id });
+    }
   });
 }
 
@@ -285,7 +311,7 @@ function computeGroupsSync(records: SalesRecord[], mode: 'appId' | 'packageId'):
 
 /**
  * Compute product groups for Launch Comparison
- * Uses Web Worker for large datasets, synchronous for small ones
+ * Always uses Web Worker to keep UI responsive
  *
  * @param records - Sales records to process
  * @param mode - Group by 'appId' or 'packageId'
@@ -301,14 +327,12 @@ export async function computeProductGroups(
     throw new Error('Computation cancelled');
   }
 
-  // Use synchronous computation for small datasets
-  // Note: Don't call onProgress synchronously here as it can cause
-  // infinite loops when called from within a Svelte effect
-  if (records.length < WORKER_THRESHOLD) {
-    return computeGroupsSync(records, mode);
+  // Empty records - return immediately
+  if (records.length === 0) {
+    return [];
   }
 
-  // Use worker for large datasets
+  // Always use worker for UI responsiveness
   try {
     return await sendToWorker<ProductGroup[]>('computeGroups', { records, mode }, options);
   } catch (error) {
@@ -316,6 +340,7 @@ export async function computeProductGroups(
     if (error instanceof Error && error.message === 'Computation cancelled') {
       throw error;
     }
+    // Fall back to sync computation only if worker fails
     console.warn('Worker failed, falling back to sync computation:', error);
     return computeGroupsSync(records, mode);
   }
@@ -323,43 +348,47 @@ export async function computeProductGroups(
 
 /**
  * Compute all aggregates in one pass
- * Uses Web Worker for large datasets
+ * Always uses Web Worker to keep UI responsive
  */
 export async function computeAggregates(
   records: SalesRecord[],
   filters: Filters
 ): Promise<AggregatesResult> {
-  // Use worker for large datasets
-  if (records.length >= WORKER_THRESHOLD) {
-    try {
-      return await sendToWorker<AggregatesResult>('computeAggregates', { records, filters });
-    } catch (error) {
-      console.warn('Worker failed for aggregates:', error);
-      // Fall through to sync computation
-    }
+  // Empty records - return empty results
+  if (records.length === 0) {
+    return {
+      dailySummary: [],
+      appSummary: [],
+      countrySummary: [],
+      totalStats: {
+        totalRevenue: 0,
+        totalUnits: 0,
+        totalRecords: 0,
+        uniqueApps: 0,
+        uniqueCountries: 0,
+      },
+    };
   }
 
-  // Synchronous fallback (simplified - actual implementation would mirror the worker logic)
-  // For now, return empty results to indicate the main thread stores should handle it
-  return {
-    dailySummary: [],
-    appSummary: [],
-    countrySummary: [],
-    totalStats: {
-      totalRevenue: 0,
-      totalUnits: 0,
-      totalRecords: 0,
-      uniqueApps: 0,
-      uniqueCountries: 0,
-    },
-  };
-}
-
-/**
- * Check if worker should be used based on data size
- */
-export function shouldUseWorker(recordCount: number): boolean {
-  return recordCount >= WORKER_THRESHOLD;
+  // Always use worker for UI responsiveness
+  try {
+    return await sendToWorker<AggregatesResult>('computeAggregates', { records, filters });
+  } catch (error) {
+    console.warn('Worker failed for aggregates:', error);
+    // Return empty results on failure - caller should handle gracefully
+    return {
+      dailySummary: [],
+      appSummary: [],
+      countrySummary: [],
+      totalStats: {
+        totalRevenue: 0,
+        totalUnits: 0,
+        totalRecords: 0,
+        uniqueApps: 0,
+        uniqueCountries: 0,
+      },
+    };
+  }
 }
 
 /**
