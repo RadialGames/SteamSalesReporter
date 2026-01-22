@@ -4,6 +4,19 @@ node_modules/
 # Build outputs
 dist/
 out/
+release/
+
+# Databases (never commit user data)
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Debug logs
+.cursor/debug.log
+*.log
+npm-debug.log*
 
 # IDE
 .idea/
@@ -16,10 +29,6 @@ out/
 .env
 .env.local
 .env.*.local
-
-# Logs
-*.log
-npm-debug.log*
 
 # OS files
 Thumbs.db
