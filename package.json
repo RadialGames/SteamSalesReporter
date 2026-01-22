@@ -33,19 +33,22 @@
     "@tauri-apps/cli": "^2.9.6",
     "@tsconfig/svelte": "^5",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^25",
+    "@types/node": "^25.0.10",
     "better-sqlite3": "^12.6.2",
     "eslint": "^9",
     "eslint-plugin-svelte": "^3",
     "globals": "^17.0.0",
-    "prettier": "^3.8.0",
+    "prettier": "^3.8.1",
     "prettier-plugin-svelte": "^3",
-    "svelte": "^5.47.1",
+    "svelte": "^5.48.0",
     "svelte-check": "^4",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8",
     "vite": "^7"
+  },
+  "engines": {
+    "npm": ">=7.0.0"
   }
 }

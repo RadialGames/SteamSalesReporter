@@ -13,11 +13,58 @@ A magical desktop application for Steam game developers to analyze their sales d
 
 ## Prerequisites
 
-- Node.js 18+ 
 - A Steam Partner account with Financial API access
 - A Financial Web API Key from the [Steam Partner Portal](https://partner.steamgames.com/)
 
 ## Getting Started
+
+### Setup
+
+First, ensure you have npm installed. npm comes bundled with Node.js.
+
+**Check if npm is installed:**
+```bash
+npm --version
+```
+
+**If npm is not installed:**
+
+**Install Node.js (which includes npm) using one of these methods:**
+
+**Using nvm (Node Version Manager) - Recommended:**
+```bash
+# Install nvm (macOS/Linux)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
+
+# Or using Homebrew (macOS)
+brew install nvm
+
+# Install Node.js LTS
+nvm install --lts
+nvm use --lts
+```
+
+**Using package managers:**
+```bash
+# macOS (Homebrew)
+brew install node
+
+# Linux (Ubuntu/Debian)
+sudo apt update
+sudo apt install nodejs npm
+
+# Linux (Fedora/RHEL)
+sudo dnf install nodejs npm
+
+# Windows (using Chocolatey)
+choco install nodejs
+```
+
+**Verify installation:**
+```bash
+node --version
+npm --version
+```
 
 ### Installation
 
@@ -37,44 +84,11 @@ Open http://localhost:5173 in your browser.
 # Development server (fast HMR)
 npm run dev
 
-# Check for package updates
-npm run update-check
-
 # Type checking
 npm run check
 
 # Production build
 npm run build
-```
-
-## Steam API Integration
-
-This app uses the [IPartnerFinancialsService](https://partner.steamgames.com/doc/webapi/IPartnerFinancialsService) API:
-
-1. **GetChangedDatesForPartner**: Fetches dates with new/updated data using a highwatermark for efficient incremental syncs
-2. **GetDetailedSales**: Retrieves detailed sales records for each date
-
-### Getting Your API Key
-
-1. Log in to your [Steamworks Partner account](https://partner.steamgames.com/)
-2. Navigate to Users & Permissions
-3. Create or join a Financial API Group
-4. Generate a Web API key for the group
-
-## Project Structure
-
-```
-steam-sales-analyzer/
-├── src/
-│   ├── App.svelte           # Root component
-│   ├── lib/
-│   │   ├── components/      # Svelte components
-│   │   ├── services/        # API abstraction layer
-│   │   ├── stores/          # Svelte stores
-│   │   └── db/              # IndexedDB (Dexie)
-│   └── app.css              # Tailwind + custom theme
-├── public/                   # Static assets
-└── vite.config.ts           # Vite config with proxy
 ```
 
 ## Tech Stack
