@@ -77,6 +77,17 @@ const debouncedFilterStoreInternal = writable<Filters>({});
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Clear the debounce timer.
+ * Call this when the app is unmounting or when you need to cancel pending filter updates.
+ */
+export function clearFilterDebounce(): void {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+}
+
 // Create a debounced filter store that updates debouncedFilterStoreInternal after a delay
 function createDebouncedFilterStore() {
   return {
@@ -119,6 +130,8 @@ function createDebouncedFilterStore() {
       immediateFilterStore.set(value);
       debouncedFilterStoreInternal.set(value);
     },
+    // Cleanup function to clear debounce timer
+    cleanup: clearFilterDebounce,
   };
 }
 

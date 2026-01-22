@@ -56,21 +56,17 @@ export async function computeAndStoreAggregates(onProgress?: DbProgressCallback)
     return;
   }
 
-  // Clear existing aggregates
-  onProgress?.('Clearing old aggregates...', 20);
-  const clearStart = Date.now();
-  await batch((batchSql) => [
-    batchSql`DELETE FROM daily_aggregates`,
-    batchSql`DELETE FROM app_aggregates`,
-    batchSql`DELETE FROM country_aggregates`,
-  ]);
-  console.log(`Aggregate clearing took ${Date.now() - clearStart}ms`);
-
-  // Compute and store all aggregates in a single batch transaction
+  // Clear and compute aggregates in a SINGLE atomic transaction
+  // This prevents data loss if computation fails after clearing
   onProgress?.('Computing all aggregates...', 30);
   const computeStart = Date.now();
   await batch((batchSql) => [
-    // Compute and store daily aggregates
+    // First: Clear existing aggregates
+    batchSql`DELETE FROM daily_aggregates`,
+    batchSql`DELETE FROM app_aggregates`,
+    batchSql`DELETE FROM country_aggregates`,
+
+    // Then: Compute and store daily aggregates
     batchSql`
       INSERT INTO daily_aggregates (date, total_revenue, total_units, record_count)
       SELECT

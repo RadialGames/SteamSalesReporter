@@ -1,3 +1,4 @@
+import { onDestroy } from 'svelte';
 import { copyToClipboard, downloadFile } from '$lib/utils/csv-export';
 
 /**
@@ -11,6 +12,7 @@ export interface CsvExportState {
 /**
  * Hook for managing CSV export functionality
  * Provides consistent copy and download functionality across components
+ * Includes proper cleanup of timeouts on component destroy
  */
 export function useCsvExport(
   generateContent: () => string,
@@ -24,6 +26,17 @@ export function useCsvExport(
     copied: false,
   });
 
+  // Track timeout for cleanup
+  let copiedTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // Cleanup on destroy
+  onDestroy(() => {
+    if (copiedTimeout) {
+      clearTimeout(copiedTimeout);
+      copiedTimeout = null;
+    }
+  });
+
   async function copy() {
     try {
       const content = generateContent();
@@ -31,9 +44,15 @@ export function useCsvExport(
       if (success) {
         state.copied = true;
 
+        // Clear any existing timeout before creating a new one
+        if (copiedTimeout) {
+          clearTimeout(copiedTimeout);
+        }
+
         // Reset copied state after 2 seconds
-        setTimeout(() => {
+        copiedTimeout = setTimeout(() => {
           state.copied = false;
+          copiedTimeout = null;
         }, 2000);
       }
     } catch (error) {

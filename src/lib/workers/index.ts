@@ -71,6 +71,7 @@ interface PendingRequest<T = unknown> {
   onProgress?: ProgressCallback;
   timeoutId?: ReturnType<typeof setTimeout>;
   cancelled: boolean;
+  abortHandler?: () => void; // For cleanup of abort listeners
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Generic map storing requests of various types
@@ -185,6 +186,8 @@ function getWorker(): Worker {
         if (!pending.cancelled) {
           pending.resolve(data);
         }
+        // Clean up abort handler reference (listener is auto-removed due to { once: true })
+        pending.abortHandler = undefined;
         pendingRequests.delete(id);
       }
     };
@@ -222,21 +225,9 @@ function sendToWorker<T>(type: string, data: unknown, options?: ComputeOptions):
       }
     }, BASE_TIMEOUT_MS);
 
-    const pending: PendingRequest<T> = {
-      resolve,
-      reject,
-      onProgress: options?.onProgress,
-      timeoutId,
-      cancelled: false,
-    };
-
-    pendingRequests.set(id, pending);
-
-    // Set up abort signal listener
-    if (options?.signal) {
-      options.signal.addEventListener(
-        'abort',
-        () => {
+    // Create abort handler that can be referenced for cleanup
+    const abortHandler = options?.signal
+      ? () => {
           const req = pendingRequests.get(id);
           if (req) {
             req.cancelled = true;
@@ -244,9 +235,23 @@ function sendToWorker<T>(type: string, data: unknown, options?: ComputeOptions):
             pendingRequests.delete(id);
             reject(new Error('Computation cancelled'));
           }
-        },
-        { once: true }
-      );
+        }
+      : undefined;
+
+    const pending: PendingRequest<T> = {
+      resolve,
+      reject,
+      onProgress: options?.onProgress,
+      timeoutId,
+      cancelled: false,
+      abortHandler,
+    };
+
+    pendingRequests.set(id, pending);
+
+    // Set up abort signal listener
+    if (options?.signal && abortHandler) {
+      options.signal.addEventListener('abort', abortHandler, { once: true });
     }
 
     const w = getWorker();

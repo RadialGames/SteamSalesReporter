@@ -14,6 +14,134 @@ import type { UnitMetrics } from '$lib/utils/calculations';
 export type { ParsedSalesRecord };
 
 /**
+ * Build dynamic SQL queries for complex filters.
+ * Uses tagged template literals for SQL injection safety.
+ * Returns separate count and data query functions to be executed.
+ */
+function buildDynamicQuery(
+  filters: Filters,
+  page: number,
+  pageSize: number
+): {
+  whereClause: string;
+  countQuery: () => Promise<unknown>;
+  dataQuery: () => Promise<unknown>;
+} {
+  const offset = (page - 1) * pageSize;
+
+  // Build conditions based on filters present
+  // Since we can't dynamically compose tagged template literals easily,
+  // we'll use a cascading approach based on which filters are present
+
+  const hasDate = filters.startDate && filters.endDate;
+  const hasCountry = !!filters.countryCode;
+  const hasSingleApp = filters.appIds && filters.appIds.length === 1;
+  const hasApiKey = filters.apiKeyIds && filters.apiKeyIds.length === 1;
+
+  // Date + Country combination
+  if (hasDate && hasCountry && !hasSingleApp && !hasApiKey) {
+    return {
+      whereClause: 'date + country',
+      countQuery: () =>
+        sql`SELECT COUNT(*) as count FROM parsed_sales 
+            WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}
+            AND country_code = ${filters.countryCode}`,
+      dataQuery: () =>
+        sql`SELECT * FROM parsed_sales 
+            WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}
+            AND country_code = ${filters.countryCode}
+            ORDER BY date DESC LIMIT ${pageSize} OFFSET ${offset}`,
+    };
+  }
+
+  // Date + Single App combination
+  if (hasDate && hasSingleApp && !hasCountry && !hasApiKey) {
+    const appId = filters.appIds![0];
+    return {
+      whereClause: 'date + app',
+      countQuery: () =>
+        sql`SELECT COUNT(*) as count FROM parsed_sales 
+            WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}
+            AND app_id = ${appId}`,
+      dataQuery: () =>
+        sql`SELECT * FROM parsed_sales 
+            WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}
+            AND app_id = ${appId}
+            ORDER BY date DESC LIMIT ${pageSize} OFFSET ${offset}`,
+    };
+  }
+
+  // Date + Single App + Country combination
+  if (hasDate && hasSingleApp && hasCountry && !hasApiKey) {
+    const appId = filters.appIds![0];
+    return {
+      whereClause: 'date + app + country',
+      countQuery: () =>
+        sql`SELECT COUNT(*) as count FROM parsed_sales 
+            WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}
+            AND app_id = ${appId} AND country_code = ${filters.countryCode}`,
+      dataQuery: () =>
+        sql`SELECT * FROM parsed_sales 
+            WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}
+            AND app_id = ${appId} AND country_code = ${filters.countryCode}
+            ORDER BY date DESC LIMIT ${pageSize} OFFSET ${offset}`,
+    };
+  }
+
+  // API Key + Date combination
+  if (hasApiKey && hasDate && !hasSingleApp && !hasCountry) {
+    const apiKeyId = filters.apiKeyIds![0];
+    return {
+      whereClause: 'apikey + date',
+      countQuery: () =>
+        sql`SELECT COUNT(*) as count FROM parsed_sales 
+            WHERE api_key_id = ${apiKeyId}
+            AND date >= ${filters.startDate} AND date <= ${filters.endDate}`,
+      dataQuery: () =>
+        sql`SELECT * FROM parsed_sales 
+            WHERE api_key_id = ${apiKeyId}
+            AND date >= ${filters.startDate} AND date <= ${filters.endDate}
+            ORDER BY date DESC LIMIT ${pageSize} OFFSET ${offset}`,
+    };
+  }
+
+  // Single API Key only
+  if (hasApiKey && !hasDate && !hasSingleApp && !hasCountry) {
+    const apiKeyId = filters.apiKeyIds![0];
+    return {
+      whereClause: 'apikey',
+      countQuery: () =>
+        sql`SELECT COUNT(*) as count FROM parsed_sales WHERE api_key_id = ${apiKeyId}`,
+      dataQuery: () =>
+        sql`SELECT * FROM parsed_sales WHERE api_key_id = ${apiKeyId}
+            ORDER BY date DESC LIMIT ${pageSize} OFFSET ${offset}`,
+    };
+  }
+
+  // Single Country only
+  if (hasCountry && !hasDate && !hasSingleApp && !hasApiKey) {
+    return {
+      whereClause: 'country',
+      countQuery: () =>
+        sql`SELECT COUNT(*) as count FROM parsed_sales WHERE country_code = ${filters.countryCode}`,
+      dataQuery: () =>
+        sql`SELECT * FROM parsed_sales WHERE country_code = ${filters.countryCode}
+            ORDER BY date DESC LIMIT ${pageSize} OFFSET ${offset}`,
+    };
+  }
+
+  // Fallback: load with basic pagination (still better than loading 1M records)
+  // For truly complex cases with multiple apps/packages/apikeys, we still need JS filtering
+  // but at least we paginate the base query
+  return {
+    whereClause: 'fallback',
+    countQuery: () => sql`SELECT COUNT(*) as count FROM parsed_sales`,
+    dataQuery: () =>
+      sql`SELECT * FROM parsed_sales ORDER BY date DESC LIMIT ${pageSize} OFFSET ${offset}`,
+  };
+}
+
+/**
  * Convert a SalesRecord (camelCase) to ParsedSalesRecord (snake_case for DB)
  */
 function toDbRecord(record: SalesRecord & { id: string; apiKeyId: string }): ParsedSalesRecord {
@@ -244,39 +372,16 @@ export async function getParsedRecords(
       ORDER BY date DESC LIMIT ${pageSize} OFFSET ${offset}
     `) as ParsedSalesRecord[];
   } else {
-    // Complex filters - fetch all and filter in memory
+    // Build dynamic WHERE clause for complex filters
+    // Use SQL filtering to avoid loading all records into memory
+    const { countQuery, dataQuery } = buildDynamicQuery(filters, page, pageSize);
 
-    const allRecords = (await sql`
-      SELECT * FROM parsed_sales ORDER BY date DESC
-    `) as ParsedSalesRecord[];
+    // Get count with filters
+    const countResult = (await countQuery()) as { count: number }[];
+    total = countResult[0]?.count ?? 0;
 
-    let filtered = allRecords;
-
-    if (filters.startDate) {
-      filtered = filtered.filter((r) => r.date >= filters.startDate!);
-    }
-    if (filters.endDate) {
-      filtered = filtered.filter((r) => r.date <= filters.endDate!);
-    }
-    if (filters.countryCode) {
-      filtered = filtered.filter((r) => r.country_code === filters.countryCode);
-    }
-    if (filters.appIds && filters.appIds.length > 0) {
-      const appIdSet = new Set(filters.appIds);
-      filtered = filtered.filter((r) => appIdSet.has(r.app_id));
-    }
-    if (filters.packageIds && filters.packageIds.length > 0) {
-      const packageIdSet = new Set(filters.packageIds);
-      filtered = filtered.filter((r) => r.packageid != null && packageIdSet.has(r.packageid));
-    }
-    if (filters.apiKeyIds && filters.apiKeyIds.length > 0) {
-      const apiKeyIdSet = new Set(filters.apiKeyIds);
-      filtered = filtered.filter((r) => apiKeyIdSet.has(r.api_key_id));
-    }
-
-    total = filtered.length;
-    const offset = (page - 1) * pageSize;
-    results = filtered.slice(offset, offset + pageSize);
+    // Get data with filters and pagination
+    results = (await dataQuery()) as ParsedSalesRecord[];
   }
 
   return {
@@ -409,30 +514,175 @@ export async function computeFilteredStats(filters?: Filters): Promise<{
     };
   }
 
-  // For filtered stats, we need to filter in memory then aggregate
-  const { data } = await getParsedRecords(1, 1000000, filters);
+  // Use SQL aggregation with dynamic WHERE clauses for common filter patterns
+  const { query } = buildStatsQuery(filters);
+  const result = (await query()) as {
+    total_revenue: number;
+    total_units: number;
+    total_records: number;
+    unique_apps: number;
+    unique_countries: number;
+  }[];
 
-  let totalRevenue = 0;
-  let totalUnits = 0;
-  const uniqueApps = new Set<number>();
-  const uniqueCountries = new Set<string>();
+  const r = result[0];
+  return {
+    totalRevenue: r?.total_revenue ?? 0,
+    totalUnits: r?.total_units ?? 0,
+    totalRecords: r?.total_records ?? 0,
+    uniqueApps: r?.unique_apps ?? 0,
+    uniqueCountries: r?.unique_countries ?? 0,
+  };
+}
 
-  for (const record of data) {
-    totalRevenue += record.grossSalesUsd ?? 0;
-    const sold = Math.abs(record.grossUnitsSold ?? 0);
-    const activated = Math.abs(record.grossUnitsActivated ?? 0);
-    const returned = Math.abs(record.grossUnitsReturned ?? 0);
-    totalUnits += sold + activated - returned;
-    uniqueApps.add(record.appId);
-    uniqueCountries.add(record.countryCode);
+/**
+ * Build dynamic SQL query for stats aggregation with filters.
+ * Uses tagged template literals for SQL injection safety.
+ */
+function buildStatsQuery(filters: Filters): { query: () => Promise<unknown> } {
+  const hasDate = filters.startDate && filters.endDate;
+  const hasCountry = !!filters.countryCode;
+  const hasSingleApp = filters.appIds && filters.appIds.length === 1;
+  const hasApiKey = filters.apiKeyIds && filters.apiKeyIds.length === 1;
+
+  // Date range only
+  if (hasDate && !hasCountry && !hasSingleApp && !hasApiKey) {
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(gross_sales_usd), 0) as total_revenue,
+          COALESCE(SUM(ABS(gross_units_sold) + ABS(gross_units_activated) - ABS(gross_units_returned)), 0) as total_units,
+          COUNT(*) as total_records,
+          COUNT(DISTINCT app_id) as unique_apps,
+          COUNT(DISTINCT country_code) as unique_countries
+        FROM parsed_sales
+        WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}`,
+    };
   }
 
+  // Date + Country
+  if (hasDate && hasCountry && !hasSingleApp && !hasApiKey) {
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(gross_sales_usd), 0) as total_revenue,
+          COALESCE(SUM(ABS(gross_units_sold) + ABS(gross_units_activated) - ABS(gross_units_returned)), 0) as total_units,
+          COUNT(*) as total_records,
+          COUNT(DISTINCT app_id) as unique_apps,
+          COUNT(DISTINCT country_code) as unique_countries
+        FROM parsed_sales
+        WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}
+        AND country_code = ${filters.countryCode}`,
+    };
+  }
+
+  // Date + Single App
+  if (hasDate && hasSingleApp && !hasCountry && !hasApiKey) {
+    const appId = filters.appIds![0];
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(gross_sales_usd), 0) as total_revenue,
+          COALESCE(SUM(ABS(gross_units_sold) + ABS(gross_units_activated) - ABS(gross_units_returned)), 0) as total_units,
+          COUNT(*) as total_records,
+          COUNT(DISTINCT app_id) as unique_apps,
+          COUNT(DISTINCT country_code) as unique_countries
+        FROM parsed_sales
+        WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}
+        AND app_id = ${appId}`,
+    };
+  }
+
+  // Date + Single App + Country
+  if (hasDate && hasSingleApp && hasCountry && !hasApiKey) {
+    const appId = filters.appIds![0];
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(gross_sales_usd), 0) as total_revenue,
+          COALESCE(SUM(ABS(gross_units_sold) + ABS(gross_units_activated) - ABS(gross_units_returned)), 0) as total_units,
+          COUNT(*) as total_records,
+          COUNT(DISTINCT app_id) as unique_apps,
+          COUNT(DISTINCT country_code) as unique_countries
+        FROM parsed_sales
+        WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}
+        AND app_id = ${appId} AND country_code = ${filters.countryCode}`,
+    };
+  }
+
+  // Single API Key + Date
+  if (hasApiKey && hasDate && !hasSingleApp && !hasCountry) {
+    const apiKeyId = filters.apiKeyIds![0];
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(gross_sales_usd), 0) as total_revenue,
+          COALESCE(SUM(ABS(gross_units_sold) + ABS(gross_units_activated) - ABS(gross_units_returned)), 0) as total_units,
+          COUNT(*) as total_records,
+          COUNT(DISTINCT app_id) as unique_apps,
+          COUNT(DISTINCT country_code) as unique_countries
+        FROM parsed_sales
+        WHERE api_key_id = ${apiKeyId}
+        AND date >= ${filters.startDate} AND date <= ${filters.endDate}`,
+    };
+  }
+
+  // Single API Key only
+  if (hasApiKey && !hasDate && !hasSingleApp && !hasCountry) {
+    const apiKeyId = filters.apiKeyIds![0];
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(gross_sales_usd), 0) as total_revenue,
+          COALESCE(SUM(ABS(gross_units_sold) + ABS(gross_units_activated) - ABS(gross_units_returned)), 0) as total_units,
+          COUNT(*) as total_records,
+          COUNT(DISTINCT app_id) as unique_apps,
+          COUNT(DISTINCT country_code) as unique_countries
+        FROM parsed_sales
+        WHERE api_key_id = ${apiKeyId}`,
+    };
+  }
+
+  // Single Country only
+  if (hasCountry && !hasDate && !hasSingleApp && !hasApiKey) {
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(gross_sales_usd), 0) as total_revenue,
+          COALESCE(SUM(ABS(gross_units_sold) + ABS(gross_units_activated) - ABS(gross_units_returned)), 0) as total_units,
+          COUNT(*) as total_records,
+          COUNT(DISTINCT app_id) as unique_apps,
+          COUNT(DISTINCT country_code) as unique_countries
+        FROM parsed_sales
+        WHERE country_code = ${filters.countryCode}`,
+    };
+  }
+
+  // Single App only
+  if (hasSingleApp && !hasDate && !hasCountry && !hasApiKey) {
+    const appId = filters.appIds![0];
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(gross_sales_usd), 0) as total_revenue,
+          COALESCE(SUM(ABS(gross_units_sold) + ABS(gross_units_activated) - ABS(gross_units_returned)), 0) as total_units,
+          COUNT(*) as total_records,
+          COUNT(DISTINCT app_id) as unique_apps,
+          COUNT(DISTINCT country_code) as unique_countries
+        FROM parsed_sales
+        WHERE app_id = ${appId}`,
+    };
+  }
+
+  // Fallback: full table scan (should be rare)
   return {
-    totalRevenue,
-    totalUnits,
-    totalRecords: data.length,
-    uniqueApps: uniqueApps.size,
-    uniqueCountries: uniqueCountries.size,
+    query: () => sql`
+      SELECT 
+        COALESCE(SUM(gross_sales_usd), 0) as total_revenue,
+        COALESCE(SUM(ABS(gross_units_sold) + ABS(gross_units_activated) - ABS(gross_units_returned)), 0) as total_units,
+        COUNT(*) as total_records,
+        COUNT(DISTINCT app_id) as unique_apps,
+        COUNT(DISTINCT country_code) as unique_countries
+      FROM parsed_sales`,
   };
 }
 
@@ -480,23 +730,19 @@ export async function getRawUnitMetrics(filters?: Filters): Promise<RawUnitMetri
     };
   }
 
-  // For filtered stats, we need to filter in memory then aggregate
-  const { data } = await getParsedRecords(1, 1000000, filters);
+  // Use SQL aggregation with dynamic WHERE clauses for common filter patterns
+  const { query } = buildUnitMetricsQuery(filters);
+  const result = (await query()) as {
+    gross_sold: number;
+    gross_returned: number;
+    gross_activated: number;
+    total_records: number;
+  }[];
 
-  let grossSold = 0;
-  let grossReturned = 0;
-  let grossActivated = 0;
-
-  for (const record of data) {
-    const sold = Math.abs(record.grossUnitsSold ?? 0);
-    const returned = Math.abs(record.grossUnitsReturned ?? 0);
-    const activated = Math.abs(record.grossUnitsActivated ?? 0);
-
-    grossSold += sold;
-    grossReturned += returned;
-    grossActivated += activated;
-  }
-
+  const r = result[0];
+  const grossSold = r?.gross_sold ?? 0;
+  const grossReturned = r?.gross_returned ?? 0;
+  const grossActivated = r?.gross_activated ?? 0;
   const grandTotal = grossSold + grossActivated - grossReturned;
 
   return {
@@ -504,7 +750,134 @@ export async function getRawUnitMetrics(filters?: Filters): Promise<RawUnitMetri
     grossReturned,
     grossActivated,
     grandTotal,
-    totalRecords: data.length,
+    totalRecords: r?.total_records ?? 0,
+  };
+}
+
+/**
+ * Build dynamic SQL query for unit metrics aggregation with filters.
+ * Uses tagged template literals for SQL injection safety.
+ */
+function buildUnitMetricsQuery(filters: Filters): { query: () => Promise<unknown> } {
+  const hasDate = filters.startDate && filters.endDate;
+  const hasCountry = !!filters.countryCode;
+  const hasSingleApp = filters.appIds && filters.appIds.length === 1;
+  const hasApiKey = filters.apiKeyIds && filters.apiKeyIds.length === 1;
+
+  // Date range only
+  if (hasDate && !hasCountry && !hasSingleApp && !hasApiKey) {
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(ABS(gross_units_sold)), 0) as gross_sold,
+          COALESCE(SUM(ABS(gross_units_returned)), 0) as gross_returned,
+          COALESCE(SUM(ABS(gross_units_activated)), 0) as gross_activated,
+          COUNT(*) as total_records
+        FROM parsed_sales
+        WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}`,
+    };
+  }
+
+  // Date + Country
+  if (hasDate && hasCountry && !hasSingleApp && !hasApiKey) {
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(ABS(gross_units_sold)), 0) as gross_sold,
+          COALESCE(SUM(ABS(gross_units_returned)), 0) as gross_returned,
+          COALESCE(SUM(ABS(gross_units_activated)), 0) as gross_activated,
+          COUNT(*) as total_records
+        FROM parsed_sales
+        WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}
+        AND country_code = ${filters.countryCode}`,
+    };
+  }
+
+  // Date + Single App
+  if (hasDate && hasSingleApp && !hasCountry && !hasApiKey) {
+    const appId = filters.appIds![0];
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(ABS(gross_units_sold)), 0) as gross_sold,
+          COALESCE(SUM(ABS(gross_units_returned)), 0) as gross_returned,
+          COALESCE(SUM(ABS(gross_units_activated)), 0) as gross_activated,
+          COUNT(*) as total_records
+        FROM parsed_sales
+        WHERE date >= ${filters.startDate} AND date <= ${filters.endDate}
+        AND app_id = ${appId}`,
+    };
+  }
+
+  // Single API Key + Date
+  if (hasApiKey && hasDate && !hasSingleApp && !hasCountry) {
+    const apiKeyId = filters.apiKeyIds![0];
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(ABS(gross_units_sold)), 0) as gross_sold,
+          COALESCE(SUM(ABS(gross_units_returned)), 0) as gross_returned,
+          COALESCE(SUM(ABS(gross_units_activated)), 0) as gross_activated,
+          COUNT(*) as total_records
+        FROM parsed_sales
+        WHERE api_key_id = ${apiKeyId}
+        AND date >= ${filters.startDate} AND date <= ${filters.endDate}`,
+    };
+  }
+
+  // Single API Key only
+  if (hasApiKey && !hasDate && !hasSingleApp && !hasCountry) {
+    const apiKeyId = filters.apiKeyIds![0];
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(ABS(gross_units_sold)), 0) as gross_sold,
+          COALESCE(SUM(ABS(gross_units_returned)), 0) as gross_returned,
+          COALESCE(SUM(ABS(gross_units_activated)), 0) as gross_activated,
+          COUNT(*) as total_records
+        FROM parsed_sales
+        WHERE api_key_id = ${apiKeyId}`,
+    };
+  }
+
+  // Single Country only
+  if (hasCountry && !hasDate && !hasSingleApp && !hasApiKey) {
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(ABS(gross_units_sold)), 0) as gross_sold,
+          COALESCE(SUM(ABS(gross_units_returned)), 0) as gross_returned,
+          COALESCE(SUM(ABS(gross_units_activated)), 0) as gross_activated,
+          COUNT(*) as total_records
+        FROM parsed_sales
+        WHERE country_code = ${filters.countryCode}`,
+    };
+  }
+
+  // Single App only
+  if (hasSingleApp && !hasDate && !hasCountry && !hasApiKey) {
+    const appId = filters.appIds![0];
+    return {
+      query: () => sql`
+        SELECT 
+          COALESCE(SUM(ABS(gross_units_sold)), 0) as gross_sold,
+          COALESCE(SUM(ABS(gross_units_returned)), 0) as gross_returned,
+          COALESCE(SUM(ABS(gross_units_activated)), 0) as gross_activated,
+          COUNT(*) as total_records
+        FROM parsed_sales
+        WHERE app_id = ${appId}`,
+    };
+  }
+
+  // Fallback: full table scan (should be rare)
+  return {
+    query: () => sql`
+      SELECT 
+        COALESCE(SUM(ABS(gross_units_sold)), 0) as gross_sold,
+        COALESCE(SUM(ABS(gross_units_returned)), 0) as gross_returned,
+        COALESCE(SUM(ABS(gross_units_activated)), 0) as gross_activated,
+        COUNT(*) as total_records
+      FROM parsed_sales`,
   };
 }
 

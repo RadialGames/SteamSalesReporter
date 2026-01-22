@@ -42,6 +42,35 @@ class Semaphore {
   }
 }
 
+/**
+ * Simple mutex for atomic operations
+ * Ensures only one async operation can proceed at a time
+ */
+class Mutex {
+  private locked = false;
+  private waiters: Array<() => void> = [];
+
+  async acquire(): Promise<void> {
+    if (!this.locked) {
+      this.locked = true;
+      return;
+    }
+
+    return new Promise<void>((resolve) => {
+      this.waiters.push(resolve);
+    });
+  }
+
+  release(): void {
+    if (this.waiters.length > 0) {
+      const next = this.waiters.shift();
+      if (next) next();
+    } else {
+      this.locked = false;
+    }
+  }
+}
+
 // Progress phases
 export type SyncPhase =
   | 'discovery'
@@ -185,14 +214,16 @@ export class SyncOrchestrator {
    *
    * This gives smooth progress updates regardless of DB write speed.
    *
-   * 1. HTTP Worker Pool (8 concurrent):
+   * 1. HTTP Worker Pool (controlled by semaphore):
    *    - Fetches data, parses JSON in memory
    *    - Updates progress immediately on each completion
    *    - Queues records for DB writing
+   *    - Uses mutex for atomic task assignment
    *
-   * 2. DB Writer (background):
+   * 2. DB Writer (background with backpressure):
    *    - Batches records and writes to SQLite
    *    - Does NOT block progress updates
+   *    - Pauses HTTP fetches when queue exceeds MAX_QUEUE_SIZE
    *    - Waits for completion at the end
    */
   private async populateData(
@@ -225,11 +256,18 @@ export class SyncOrchestrator {
       }
     }
 
+    // === Constants for backpressure ===
+    const MAX_QUEUE_SIZE = 1000; // Pause HTTP fetches when queue exceeds this
+    const FLUSH_THRESHOLD = 200; // Trigger flush when queue reaches this
+
     // === Shared State ===
     let completedHttpTasks = 0;
     let totalRecordsFetched = 0;
     let taskIndex = 0;
     let cancelled = false;
+
+    // Mutex for atomic task index access
+    const taskMutex = new Mutex();
 
     // Queue for DB writes - records accumulate here while HTTP fetches continue
     const dbWriteQueue: (SalesRecord & { id: string; apiKeyId: string })[] = [];
@@ -237,14 +275,37 @@ export class SyncOrchestrator {
     let dbWritePromise: Promise<void> | null = null;
     let totalRecordsWritten = 0;
 
+    // Backpressure: waiters that are blocked due to full queue
+    const queueWaiters: Array<() => void> = [];
+
+    // Signal that queue has space
+    const signalQueueHasSpace = (): void => {
+      while (queueWaiters.length > 0 && dbWriteQueue.length < MAX_QUEUE_SIZE) {
+        const waiter = queueWaiters.shift();
+        if (waiter) waiter();
+      }
+    };
+
+    // Wait for queue to have space
+    const waitForQueueSpace = async (): Promise<void> => {
+      if (dbWriteQueue.length < MAX_QUEUE_SIZE) return;
+
+      return new Promise<void>((resolve) => {
+        queueWaiters.push(resolve);
+      });
+    };
+
     // === DB Writer Function (non-blocking) ===
     const flushDbQueue = async (): Promise<void> => {
       if (dbWriteInProgress || dbWriteQueue.length === 0) return;
 
       dbWriteInProgress = true;
 
-      // Take all records from queue
+      // Take all records from queue atomically
       const recordsToWrite = dbWriteQueue.splice(0, dbWriteQueue.length);
+
+      // Signal that queue now has space (unblock waiting HTTP workers)
+      signalQueueHasSpace();
 
       try {
         await storeParsedRecords(recordsToWrite);
@@ -261,24 +322,52 @@ export class SyncOrchestrator {
       }
     };
 
-    // === HTTP Worker Function ===
-    const processOneTask = async (): Promise<void> => {
-      while (taskIndex < sortedTasks.length && !cancelled) {
-        const myTaskIndex = taskIndex++;
-        const task = sortedTasks[myTaskIndex];
-
-        const apiKey = apiKeyMap.get(task.apiKeyId);
-        if (!apiKey) {
-          completedHttpTasks++;
-          continue;
+    // === Atomic task acquisition ===
+    const acquireNextTask = async (): Promise<{
+      index: number;
+      task: (typeof sortedTasks)[0];
+    } | null> => {
+      await taskMutex.acquire();
+      try {
+        if (taskIndex >= sortedTasks.length || cancelled) {
+          return null;
         }
+        const index = taskIndex++;
+        return { index, task: sortedTasks[index] };
+      } finally {
+        taskMutex.release();
+      }
+    };
+
+    // === HTTP Worker Function (uses semaphore for concurrency control) ===
+    const processOneTask = async (): Promise<void> => {
+      while (!cancelled) {
+        // Acquire semaphore slot for HTTP request
+        await this.httpSemaphore.acquire();
 
         try {
+          // Atomically get next task
+          const taskData = await acquireNextTask();
+          if (!taskData) {
+            return; // No more tasks
+          }
+
+          const { task } = taskData;
+
+          const apiKey = apiKeyMap.get(task.apiKeyId);
+          if (!apiKey) {
+            completedHttpTasks++;
+            continue;
+          }
+
           // Check cancellation
           if (callbacks.getAbortSignal()?.aborted) {
             cancelled = true;
             return;
           }
+
+          // Wait for queue space (backpressure)
+          await waitForQueueSpace();
 
           // HTTP fetch (fast, ~100ms) - fetchSalesForDate now stores raw responses internally
           const salesRecords = await fetchSalesForDate(
@@ -315,7 +404,7 @@ export class SyncOrchestrator {
           });
 
           // Trigger DB write if queue is getting large (fire and forget)
-          if (dbWriteQueue.length >= 200 && !dbWriteInProgress) {
+          if (dbWriteQueue.length >= FLUSH_THRESHOLD && !dbWriteInProgress) {
             dbWritePromise = flushDbQueue();
           }
         } catch (err) {
@@ -324,16 +413,19 @@ export class SyncOrchestrator {
             return;
           }
           completedHttpTasks++;
-          // Update progress even on error
+          // Update progress even on error (but don't mark as success)
           callbacks.onProgress({
             phase: 'populate',
             message: `Fetching sales data...`,
             completedTasks: completedHttpTasks,
             totalTasks,
-            currentDate: task.date,
+            currentDate: 'error',
             recordsFetched: totalRecordsFetched,
             keySegments,
           });
+        } finally {
+          // Always release semaphore
+          this.httpSemaphore.release();
         }
       }
     };

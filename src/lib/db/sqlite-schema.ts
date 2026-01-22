@@ -116,11 +116,17 @@ export function getSchemaStatements(sql: OnInitSqlFunction): Statement[] {
       app_id INTEGER NOT NULL,
       units_sold INTEGER DEFAULT 0
     )`,
+    // Single-column indexes
     sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_date ON parsed_sales(date)`,
     sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_app_id ON parsed_sales(app_id)`,
     sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_country_code ON parsed_sales(country_code)`,
     sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_api_key_id ON parsed_sales(api_key_id)`,
     sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_packageid ON parsed_sales(packageid)`,
+    // Composite indexes for common filter combinations
+    sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_date_app ON parsed_sales(date, app_id)`,
+    sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_date_country ON parsed_sales(date, country_code)`,
+    sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_api_key_date ON parsed_sales(api_key_id, date)`,
+    sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_app_country_date ON parsed_sales(app_id, country_code, date)`,
 
     // =========================================================================
     // Tier 3: Aggregates

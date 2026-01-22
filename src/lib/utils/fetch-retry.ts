@@ -43,12 +43,35 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Combine multiple AbortSignals into one.
+ * The combined signal aborts when any of the input signals abort.
+ */
+function combineAbortSignals(...signals: AbortSignal[]): AbortSignal {
+  const controller = new AbortController();
+
+  for (const signal of signals) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      break;
+    }
+    signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+  }
+
+  return controller.signal;
+}
+
+/**
  * Configuration for retry behavior
  */
 export interface RetryConfig {
   maxRetries: number;
   signal?: AbortSignal;
+  /** Timeout in milliseconds for each request attempt (default: 30000ms / 30s) */
+  timeoutMs?: number;
 }
+
+/** Default timeout for fetch requests (30 seconds) */
+const DEFAULT_TIMEOUT_MS = 30000;
 
 /**
  * Result of a fetch operation
@@ -63,13 +86,14 @@ export interface FetchResult<T> {
 /**
  * Fetch with retry logic - handles network errors, timeouts, and 5xx errors
  * with exponential backoff. Non-retryable errors (4xx client errors) are thrown immediately.
+ * Includes timeout handling to prevent indefinitely hanging requests.
  */
 export async function fetchWithRetry<T>(
   url: string,
   options: RequestInit & RetryConfig,
   parseResponse: (response: Response) => Promise<T>
 ): Promise<T> {
-  const { maxRetries, signal, ...fetchOptions } = options;
+  const { maxRetries, signal, timeoutMs = DEFAULT_TIMEOUT_MS, ...fetchOptions } = options;
 
   let lastError: Error | null = null;
   let lastStatus: number | undefined;
@@ -80,8 +104,18 @@ export async function fetchWithRetry<T>(
       throw new SyncCancelledError();
     }
 
+    // Create a combined abort signal for timeout and user cancellation
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+
+    // Combine user signal and timeout signal
+    const combinedSignal = signal
+      ? combineAbortSignals(signal, timeoutController.signal)
+      : timeoutController.signal;
+
     try {
-      const response = await fetch(url, fetchOptions);
+      const response = await fetch(url, { ...fetchOptions, signal: combinedSignal });
+      clearTimeout(timeoutId);
 
       // Check if response is ok
       if (!response.ok) {
@@ -101,13 +135,28 @@ export async function fetchWithRetry<T>(
         return await parseResponse(response);
       }
     } catch (error) {
-      // Check if this was a cancellation
+      // Always clear the timeout in catch
+      clearTimeout(timeoutId);
+
+      // Check if this was a user cancellation
       if (error instanceof SyncCancelledError || signal?.aborted) {
         throw new SyncCancelledError();
       }
 
-      // Check if this is a retryable error
-      if (isRetryableError(error, lastStatus)) {
+      // Check if this was a timeout (AbortError from our timeout controller)
+      const isTimeout =
+        error instanceof Error &&
+        error.name === 'AbortError' &&
+        timeoutController.signal.aborted &&
+        !signal?.aborted;
+
+      if (isTimeout) {
+        lastError = new Error(`Request timeout after ${timeoutMs}ms`);
+        lastStatus = 408; // Request Timeout
+      }
+
+      // Check if this is a retryable error (includes timeouts)
+      if (isRetryableError(error, lastStatus) || isTimeout) {
         lastError = error instanceof Error ? error : new Error(String(error));
 
         // Log retry attempt

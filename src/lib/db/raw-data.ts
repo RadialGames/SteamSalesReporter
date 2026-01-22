@@ -5,7 +5,7 @@
  * This is the source of truth - all other tiers can be rebuilt from this.
  */
 
-import { sql } from './sqlite';
+import { sql, batch } from './sqlite';
 import type { RawApiData } from './sqlite-schema';
 
 // Re-export the type
@@ -90,41 +90,42 @@ export async function markRawDataError(id: string): Promise<void> {
 
 /**
  * Batch mark multiple raw data records as parsing
+ * Uses batch operation with tagged template literals for SQL injection safety
  */
 export async function markRawDataBatchParsing(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
 
-  // Use a single query with IN clause for efficiency
-  const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
-  const query = `UPDATE raw_api_data SET status = 'parsing' WHERE id IN (${placeholders})`;
-
-  await sql(query, ...ids);
+  // Use batch with individual parameterized updates for safety
+  // sqlocal's batch function executes all statements atomically
+  await batch((batchSql) =>
+    ids.map((id) => batchSql`UPDATE raw_api_data SET status = 'parsing' WHERE id = ${id}`)
+  );
 }
 
 /**
  * Batch mark multiple raw data records as parsed
+ * Uses batch operation with tagged template literals for SQL injection safety
  */
 export async function markRawDataBatchParsed(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
 
-  // Use a single query with IN clause for efficiency
-  const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
-  const query = `UPDATE raw_api_data SET status = 'parsed' WHERE id IN (${placeholders})`;
-
-  await sql(query, ...ids);
+  // Use batch with individual parameterized updates for safety
+  await batch((batchSql) =>
+    ids.map((id) => batchSql`UPDATE raw_api_data SET status = 'parsed' WHERE id = ${id}`)
+  );
 }
 
 /**
  * Batch mark multiple raw data records as error
+ * Uses batch operation with tagged template literals for SQL injection safety
  */
 export async function markRawDataBatchError(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
 
-  // Use a single query with IN clause for efficiency
-  const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
-  const query = `UPDATE raw_api_data SET status = 'error' WHERE id IN (${placeholders})`;
-
-  await sql(query, ...ids);
+  // Use batch with individual parameterized updates for safety
+  await batch((batchSql) =>
+    ids.map((id) => batchSql`UPDATE raw_api_data SET status = 'error' WHERE id = ${id}`)
+  );
 }
 
 /**

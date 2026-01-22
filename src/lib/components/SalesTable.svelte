@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { filterStore } from '$lib/stores/sales';
   import type { SalesRecord } from '$lib/services/types';
   import { formatCurrency, formatNumber } from '$lib/utils/formatters';
@@ -84,25 +83,16 @@
   // Pagination
   const totalPages = $derived(Math.ceil(totalRecords / pageSize));
 
-  // Load data when page or filters change
+  // Consolidated effect: Load data when page, filters, or sort changes
+  // This replaces the two separate effects that could trigger duplicate loadPage() calls
   $effect(() => {
+    // Track all dependencies that should trigger a reload
     currentPage;
     $filterStore;
-    loadPage(currentPage);
-  });
-
-  // Reload when sort changes
-  $effect(() => {
     sortField;
     sortDirection;
-    if (paginatedData.length > 0) {
-      // Re-sort current page data
-      loadPage(currentPage);
-    }
-  });
-
-  onMount(() => {
-    loadPage(1);
+    // Load the page (the effect handles initial mount as well)
+    loadPage(currentPage);
   });
 
   function toggleSort(field: SortField) {

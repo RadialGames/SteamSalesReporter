@@ -317,7 +317,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+  class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4"
   onmousedown={startWindowDrag}
 >
   <div class="rainbow-border max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">

@@ -462,31 +462,41 @@
       </div>
     {:else}
       <!-- Header -->
-      <header class="p-6 flex items-center justify-between">
+      <header class="p-6 flex flex-wrap items-center justify-between gap-4">
         <div class="flex items-center gap-4">
-          <img src="/unicorn.svg" alt="Unicorn" class="w-12 h-12 unicorn-bounce" />
+          <img
+            src="/unicorn.svg"
+            alt="Steam Sales Analyzer logo"
+            class="w-12 h-12 unicorn-bounce"
+          />
           <h1 class="text-3xl font-bold font-['Fredoka']">
             <span class="rainbow-text">Steam Sales Analyzer</span>
           </h1>
         </div>
-        <div class="flex items-center gap-4">
+        <nav class="flex items-center gap-4" aria-label="Main navigation">
           <button
             class="btn-rainbow flex items-center gap-2"
             onclick={handleRefreshData}
             disabled={$isLoading}
+            aria-label={$isLoading ? 'Loading data...' : 'Refresh sales data from Steam'}
+            aria-busy={$isLoading}
           >
             {#if $isLoading}
-              <span class="inline-block animate-spin">&#10226;</span>
+              <span class="inline-block animate-spin" aria-hidden="true">&#10226;</span>
             {:else}
-              <span>&#8635;</span>
+              <span aria-hidden="true">&#8635;</span>
             {/if}
             Refresh Data
           </button>
-          <button class="btn-primary flex items-center gap-2" onclick={openSettings}>
-            <span>&#9881;</span>
+          <button
+            class="btn-primary flex items-center gap-2"
+            onclick={openSettings}
+            aria-label="Open settings and manage API keys"
+          >
+            <span aria-hidden="true">&#9881;</span>
             Settings
           </button>
-        </div>
+        </nav>
       </header>
 
       <!-- Error message -->
@@ -499,7 +509,7 @@
       {/if}
 
       <!-- Dashboard -->
-      <main class="p-6">
+      <main class="p-6" aria-label="Sales dashboard">
         {#key dashboardRefreshKey}
           <Dashboard />
         {/key}

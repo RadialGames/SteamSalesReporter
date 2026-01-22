@@ -160,7 +160,9 @@ Main table for querying sales data.
 | country_name | TEXT | Denormalized country name |
 | region | TEXT | Region from country_info |
 
-**Key Indexes**: date, app_id, country_code, api_key_id, packageid
+**Key Indexes**:
+- Single-column: date, app_id, country_code, api_key_id, packageid
+- Composite: (date, app_id), (date, country_code), (api_key_id, date), (app_id, country_code, date)
 
 ### Tier 3: Aggregates
 

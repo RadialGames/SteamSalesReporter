@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack, tick, onMount } from 'svelte';
+  import { untrack, tick, onMount, onDestroy } from 'svelte';
   import { streamParsedRecords } from '$lib/db/parsed-data';
   import type { SalesRecord } from '$lib/services/types';
   import ProductLaunchTable from './ProductLaunchTable.svelte';
@@ -44,17 +44,50 @@
   // Update elapsed time every second while computing
   let elapsedInterval: ReturnType<typeof setInterval> | null = null;
 
+  // Track copy feedback timeout for cleanup
+  let copyFeedbackTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // Cleanup all resources on component destroy
+  onDestroy(() => {
+    // Clear elapsed interval
+    if (elapsedInterval) {
+      clearInterval(elapsedInterval);
+      elapsedInterval = null;
+    }
+    // Clear copy feedback timeout
+    if (copyFeedbackTimeout) {
+      clearTimeout(copyFeedbackTimeout);
+      copyFeedbackTimeout = null;
+    }
+    // Disconnect intersection observer
+    if (observer) {
+      observer.disconnect();
+      observer = null;
+    }
+    // Abort any in-progress computation
+    if (abortController) {
+      abortController.abort();
+      abortController = null;
+    }
+  });
+
   $effect(() => {
+    // Clear any existing interval before potentially creating a new one
+    if (elapsedInterval) {
+      clearInterval(elapsedInterval);
+      elapsedInterval = null;
+    }
+
     if (isComputing && computeStartTime) {
       elapsedInterval = setInterval(() => {
         elapsedSeconds = Math.floor((Date.now() - computeStartTime!) / 1000);
       }, 1000);
       return () => {
-        if (elapsedInterval) clearInterval(elapsedInterval);
+        if (elapsedInterval) {
+          clearInterval(elapsedInterval);
+          elapsedInterval = null;
+        }
       };
-    } else if (elapsedInterval) {
-      clearInterval(elapsedInterval);
-      elapsedInterval = null;
     }
   });
 
@@ -272,6 +305,12 @@
 
   // Setup intersection observer for infinite scroll
   $effect(() => {
+    // Disconnect any existing observer before creating a new one
+    if (observer) {
+      observer.disconnect();
+      observer = null;
+    }
+
     if (loadMoreRef && hasMoreProducts) {
       observer = new IntersectionObserver(
         (entries) => {
@@ -284,7 +323,10 @@
       observer.observe(loadMoreRef);
 
       return () => {
-        observer?.disconnect();
+        if (observer) {
+          observer.disconnect();
+          observer = null;
+        }
       };
     }
   });
@@ -398,7 +440,14 @@
     try {
       await navigator.clipboard.writeText(csvContent);
       copyFeedback = true;
-      setTimeout(() => (copyFeedback = false), 2000);
+      // Clear any existing timeout before creating a new one
+      if (copyFeedbackTimeout) {
+        clearTimeout(copyFeedbackTimeout);
+      }
+      copyFeedbackTimeout = setTimeout(() => {
+        copyFeedback = false;
+        copyFeedbackTimeout = null;
+      }, 2000);
     } catch (err) {
       console.error('Failed to copy to clipboard:', err);
     }

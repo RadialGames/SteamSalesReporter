@@ -2,6 +2,7 @@
 
 /**
  * Generate CSV content from headers and rows
+ * Properly escapes all values to handle commas, quotes, and newlines.
  *
  * @param headers - Array of column header strings
  * @param rows - 2D array of row data (each inner array is a row)
@@ -14,7 +15,9 @@
  * );
  */
 export function generateCsv(headers: string[], rows: string[][]): string {
-  return [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
+  const escapedHeaders = headers.map(escapeCsvValue);
+  const escapedRows = rows.map((row) => row.map(escapeCsvValue));
+  return [escapedHeaders.join(','), ...escapedRows.map((row) => row.join(','))].join('\n');
 }
 
 /**
@@ -58,6 +61,7 @@ export async function copyToClipboard(content: string): Promise<boolean> {
 
 /**
  * Download content as a file
+ * Uses try-finally to ensure URL cleanup even if errors occur.
  *
  * @param content - The file content
  * @param filename - Name of the file to download
@@ -74,13 +78,18 @@ export function downloadFile(
 ): void {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.setAttribute('href', url);
-  link.setAttribute('download', filename);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+
+  try {
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  } finally {
+    // Always clean up the URL, even if an error occurs
+    URL.revokeObjectURL(url);
+  }
 }
 
 /**
