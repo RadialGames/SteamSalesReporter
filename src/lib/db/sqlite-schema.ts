@@ -127,6 +127,10 @@ export function getSchemaStatements(sql: OnInitSqlFunction): Statement[] {
     sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_date_country ON parsed_sales(date, country_code)`,
     sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_api_key_date ON parsed_sales(api_key_id, date)`,
     sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_app_country_date ON parsed_sales(app_id, country_code, date)`,
+    // Covering indexes for aggregate queries - include aggregated columns to avoid table lookups
+    sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_date_covering ON parsed_sales(date, gross_sales_usd, units_sold)`,
+    sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_app_id_covering ON parsed_sales(app_id, gross_sales_usd, units_sold, date, app_name)`,
+    sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_country_covering ON parsed_sales(country_code, gross_sales_usd, units_sold)`,
 
     // =========================================================================
     // Tier 3: Aggregates

@@ -56,6 +56,10 @@ export async function computeAndStoreAggregates(onProgress?: DbProgressCallback)
     return;
   }
 
+  // Update statistics to help SQLite choose optimal query plans
+  onProgress?.('Updating query statistics...', 20);
+  await sql`ANALYZE parsed_sales`;
+
   // Clear and compute aggregates in a SINGLE atomic transaction
   // This prevents data loss if computation fails after clearing
   onProgress?.('Computing all aggregates...', 30);
@@ -67,6 +71,7 @@ export async function computeAndStoreAggregates(onProgress?: DbProgressCallback)
     batchSql`DELETE FROM country_aggregates`,
 
     // Then: Compute and store daily aggregates
+    // Using covering index idx_parsed_sales_date_covering for optimal performance
     batchSql`
       INSERT INTO daily_aggregates (date, total_revenue, total_units, record_count)
       SELECT
@@ -79,6 +84,7 @@ export async function computeAndStoreAggregates(onProgress?: DbProgressCallback)
     `,
 
     // Compute and store app aggregates
+    // Using covering index idx_parsed_sales_app_id_covering for optimal performance
     batchSql`
       INSERT INTO app_aggregates (app_id, app_name, total_revenue, total_units, record_count, first_sale_date, last_sale_date)
       SELECT
@@ -94,6 +100,7 @@ export async function computeAndStoreAggregates(onProgress?: DbProgressCallback)
     `,
 
     // Compute and store country aggregates
+    // Using covering index idx_parsed_sales_country_covering for optimal performance
     batchSql`
       INSERT INTO country_aggregates (country_code, total_revenue, total_units, record_count)
       SELECT

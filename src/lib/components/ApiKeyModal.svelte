@@ -41,8 +41,8 @@
   let wipeProgressPercent = $state(0);
   let wipeKeyName = $state('');
 
-  // Help section
-  let showHelpSection = $state(false);
+  // Help dialog
+  let showHelpDialog = $state(false);
 
   // Load API keys on mount
   $effect(() => {
@@ -570,152 +570,123 @@
           </div>
         </div>
       {:else}
-        <!-- Add Key Button -->
-        <button
-          type="button"
-          class="w-full py-3 border-2 border-dashed border-purple-500/50 hover:border-purple-400 rounded-lg text-purple-300 hover:text-purple-200 transition-colors flex items-center justify-center gap-2 mb-4"
-          onclick={() => (showAddForm = true)}
-        >
-          <span class="text-xl">&#10133;</span>
-          Add New API Key
-        </button>
+        <!-- Add Key Button - Small plus button -->
+        <div class="flex justify-end mb-4">
+          <button
+            type="button"
+            class="w-10 h-10 flex items-center justify-center bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/50 text-purple-300 hover:text-purple-200 rounded-lg transition-colors"
+            onclick={() => (showAddForm = true)}
+            title="Add New API Key"
+          >
+            <span class="text-xl">&#10133;</span>
+          </button>
+        </div>
       {/if}
 
-      <!-- Help Section -->
+      <!-- Footer Actions -->
       <div class="pt-4 border-t border-white/10">
-        <button
-          type="button"
-          class="w-full flex items-center justify-between text-sm font-semibold text-purple-200 hover:text-purple-100 transition-colors"
-          onclick={() => (showHelpSection = !showHelpSection)}
-        >
-          <span>How to get your API key</span>
-          <span
-            class="text-lg transition-transform duration-200"
-            class:rotate-180={showHelpSection}
-          >
-            &#9660;
-          </span>
-        </button>
-
-        {#if showHelpSection}
-          <ol class="text-xs text-purple-300 space-y-2 list-decimal list-inside mt-3">
-            <li>
-              Log in to the <a
-                href="https://partner.steamgames.com/pub/groups/"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="text-purple-400 hover:text-purple-300 underline">Steam Partner Portal</a
+        <!-- Confirmation Dialogs (shown when active) -->
+        {#if confirmAction?.type === 'wipeProcessed'}
+          <div class="bg-amber-500/20 border border-amber-500/50 rounded-lg p-4 mb-4">
+            <p class="text-sm text-amber-200 mb-3">
+              <strong>Wipe processed data?</strong>
+            </p>
+            <p class="text-xs text-amber-300 mb-4">
+              This will clear all parsed records, aggregates, and display cache. Raw API responses
+              will be kept and can be reprocessed by clicking "Refresh Data".
+            </p>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold text-sm transition-colors disabled:opacity-50"
+                onclick={handleWipeProcessedData}
+                disabled={isProcessing}
               >
-            </li>
-            <li>Navigate to Users & Permissions &gt; Manage Groups</li>
-            <li>Create a new Financial API Group</li>
-            <li>Click Manage Web API Key</li>
-            <li>Enable financial reporting</li>
-          </ol>
+                {#if isProcessing}
+                  <span class="inline-block animate-spin mr-2">&#10226;</span>
+                  Processing...
+                {:else}
+                  Yes, Wipe Processed Data
+                {/if}
+              </button>
+              <button
+                type="button"
+                class="px-4 py-2 bg-white/10 hover:bg-white/20 text-purple-200 rounded-lg font-semibold text-sm transition-colors"
+                onclick={() => (confirmAction = null)}
+                disabled={isProcessing}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        {:else if confirmAction?.type === 'wipeAll'}
+          <div class="bg-red-500/20 border border-red-500/50 rounded-lg p-4 mb-4">
+            <p class="text-sm text-red-200 mb-3">
+              <strong>Wipe ALL data?</strong>
+            </p>
+            <p class="text-xs text-red-300 mb-4">
+              This will delete all sales records, aggregates, and display cache from all API keys.
+              API keys themselves will remain. This action cannot be undone.
+            </p>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold text-sm transition-colors disabled:opacity-50"
+                onclick={handleWipeAllData}
+                disabled={isProcessing}
+              >
+                {#if isProcessing}
+                  <span class="inline-block animate-spin mr-2">&#10226;</span>
+                  Processing...
+                {:else}
+                  Yes, Wipe All Data
+                {/if}
+              </button>
+              <button
+                type="button"
+                class="px-4 py-2 bg-white/10 hover:bg-white/20 text-purple-200 rounded-lg font-semibold text-sm transition-colors"
+                onclick={() => (confirmAction = null)}
+                disabled={isProcessing}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         {/if}
 
-        <!-- Wipe Processed Data Button (for reprocessing) -->
-        <div class="pt-4 border-t border-amber-500/30 mt-4">
-          {#if confirmAction?.type === 'wipeProcessed'}
-            <!-- Wipe Processed Confirmation Dialog -->
-            <div class="bg-amber-500/20 border border-amber-500/50 rounded-lg p-4">
-              <p class="text-sm text-amber-200 mb-3">
-                <strong>Wipe processed data?</strong>
-              </p>
-              <p class="text-xs text-amber-300 mb-4">
-                This will clear all parsed records, aggregates, and display cache. Raw API responses
-                will be kept and can be reprocessed by clicking "Refresh Data".
-              </p>
-              <div class="flex gap-2">
-                <button
-                  type="button"
-                  class="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold text-sm transition-colors disabled:opacity-50"
-                  onclick={handleWipeProcessedData}
-                  disabled={isProcessing}
-                >
-                  {#if isProcessing}
-                    <span class="inline-block animate-spin mr-2">&#10226;</span>
-                    Processing...
-                  {:else}
-                    Yes, Wipe Processed Data
-                  {/if}
-                </button>
-                <button
-                  type="button"
-                  class="px-4 py-2 bg-white/10 hover:bg-white/20 text-purple-200 rounded-lg font-semibold text-sm transition-colors"
-                  onclick={() => (confirmAction = null)}
-                  disabled={isProcessing}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          {:else}
+        <!-- Action Buttons Row -->
+        <div class="flex items-center justify-between">
+          <!-- Help Button - Question mark icon -->
+          <button
+            type="button"
+            class="w-8 h-8 flex items-center justify-center text-purple-400 hover:text-purple-300 transition-colors"
+            onclick={() => (showHelpDialog = true)}
+            title="How to get your API key"
+          >
+            <span class="text-xl">&#63;</span>
+          </button>
+
+          <!-- Wipe Buttons - Side by side -->
+          <div class="flex gap-2">
             <button
               type="button"
-              class="w-full px-4 py-3 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-300 rounded-lg font-semibold text-sm transition-colors flex items-center justify-center gap-2"
+              class="px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-300 rounded-lg font-semibold text-sm transition-colors"
               onclick={() => (confirmAction = { type: 'wipeProcessed' })}
               title="Wipe processed data for reprocessing"
+              disabled={confirmAction !== null}
             >
-              <span class="text-xl">&#128260;</span>
-              Wipe Processed Data
+              <span class="text-lg">&#128260;</span>
             </button>
-            <p class="text-xs text-amber-400/70 mt-2 text-center">
-              Keeps raw API data but clears processed results. Use "Refresh Data" to reprocess.
-            </p>
-          {/if}
-        </div>
-
-        <!-- Wipe All Data Button -->
-        <div class="pt-4 border-t border-red-500/30 mt-4">
-          {#if confirmAction?.type === 'wipeAll'}
-            <!-- Wipe All Confirmation Dialog -->
-            <div class="bg-red-500/20 border border-red-500/50 rounded-lg p-4">
-              <p class="text-sm text-red-200 mb-3">
-                <strong>Wipe ALL data?</strong>
-              </p>
-              <p class="text-xs text-red-300 mb-4">
-                This will delete all sales records, aggregates, and display cache from all API keys.
-                API keys themselves will remain. This action cannot be undone.
-              </p>
-              <div class="flex gap-2">
-                <button
-                  type="button"
-                  class="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold text-sm transition-colors disabled:opacity-50"
-                  onclick={handleWipeAllData}
-                  disabled={isProcessing}
-                >
-                  {#if isProcessing}
-                    <span class="inline-block animate-spin mr-2">&#10226;</span>
-                    Processing...
-                  {:else}
-                    Yes, Wipe All Data
-                  {/if}
-                </button>
-                <button
-                  type="button"
-                  class="px-4 py-2 bg-white/10 hover:bg-white/20 text-purple-200 rounded-lg font-semibold text-sm transition-colors"
-                  onclick={() => (confirmAction = null)}
-                  disabled={isProcessing}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          {:else}
             <button
               type="button"
-              class="w-full px-4 py-3 bg-red-500/20 hover:bg-red-500/30 border border-red-500/50 text-red-300 rounded-lg font-semibold text-sm transition-colors flex items-center justify-center gap-2"
+              class="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 border border-red-500/50 text-red-300 rounded-lg font-semibold text-sm transition-colors"
               onclick={() => (confirmAction = { type: 'wipeAll' })}
               title="Wipe all data from all API keys"
+              disabled={confirmAction !== null}
             >
-              <span class="text-xl">&#128465;</span>
-              Wipe All Data
+              <span class="text-lg">&#128465;</span>
             </button>
-            <p class="text-xs text-red-400/70 mt-2 text-center">
-              This will delete all sales data, aggregates, and display cache. API keys will remain.
-            </p>
-          {/if}
+          </div>
         </div>
       </div>
     </div>
@@ -747,5 +718,34 @@
         {wipeProgressPercent}%
       </div>
     </div>
+  </div>
+</Modal>
+
+<!-- Help Dialog -->
+<Modal
+  open={showHelpDialog}
+  title="How to get your API key"
+  icon="&#63;"
+  maxWidth="md"
+  draggable={true}
+  onclose={() => (showHelpDialog = false)}
+>
+  <div class="py-4">
+    <ol class="text-sm text-purple-300 space-y-3 list-decimal list-inside">
+      <li>
+        Log in to the{' '}
+        <a
+          href="https://partner.steamgames.com/pub/groups/"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="text-purple-400 hover:text-purple-300 underline"
+          >Steam Partner Portal</a
+        >
+      </li>
+      <li>Navigate to Users & Permissions &gt; Manage Groups</li>
+      <li>Create a new Financial API Group</li>
+      <li>Click Manage Web API Key</li>
+      <li>Enable financial reporting</li>
+    </ol>
   </div>
 </Modal>

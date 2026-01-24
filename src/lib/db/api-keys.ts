@@ -30,13 +30,20 @@ function toInfo(record: ApiKeyMetadata): ApiKeyInfo {
  * Get all API keys
  */
 export async function getAllApiKeys(): Promise<ApiKeyInfo[]> {
-  const results = (await sql`
-    SELECT id, display_name, key_hash, created_at 
-    FROM api_keys 
-    ORDER BY created_at DESC
-  `) as ApiKeyMetadata[];
+  try {
+    const results = (await sql`
+      SELECT id, display_name, key_hash, created_at 
+      FROM api_keys 
+      ORDER BY created_at DESC
+    `) as ApiKeyMetadata[];
 
-  return results.map(toInfo);
+    const keys = results.map(toInfo);
+    console.log(`[getAllApiKeys] Found ${keys.length} API key(s) in database`);
+    return keys;
+  } catch (error) {
+    console.error('[getAllApiKeys] Error querying database:', error);
+    throw error;
+  }
 }
 
 /**
@@ -56,10 +63,16 @@ export async function getApiKeyMetadata(id: string): Promise<ApiKeyInfo | null> 
  * Add API key metadata
  */
 export async function addApiKeyMetadata(info: ApiKeyInfo): Promise<void> {
-  await sql`
-    INSERT OR REPLACE INTO api_keys (id, display_name, key_hash, created_at)
-    VALUES (${info.id}, ${info.displayName ?? null}, ${info.keyHash}, ${info.createdAt})
-  `;
+  try {
+    await sql`
+      INSERT OR REPLACE INTO api_keys (id, display_name, key_hash, created_at)
+      VALUES (${info.id}, ${info.displayName ?? null}, ${info.keyHash}, ${info.createdAt})
+    `;
+    console.log(`[addApiKeyMetadata] Successfully inserted/updated API key metadata for id: ${info.id}`);
+  } catch (error) {
+    console.error('[addApiKeyMetadata] Error inserting API key metadata:', error);
+    throw error;
+  }
 }
 
 /**

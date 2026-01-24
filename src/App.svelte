@@ -41,8 +41,15 @@
   let loadingProgress = $state(0);
 
   async function loadApiKeys() {
-    const keys = await services.getAllApiKeys();
-    apiKeys = Array.isArray(keys) ? keys : [];
+    try {
+      const keys = await services.getAllApiKeys();
+      apiKeys = Array.isArray(keys) ? keys : [];
+      console.log(`Loaded ${apiKeys.length} API key(s) from database`);
+    } catch (error) {
+      console.error('Error loading API keys:', error);
+      errorMessage.set('Failed to load API keys. Please try refreshing the app.');
+      apiKeys = [];
+    }
   }
 
   onMount(async () => {

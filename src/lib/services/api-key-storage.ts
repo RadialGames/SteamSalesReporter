@@ -54,17 +54,37 @@ export async function addApiKey(key: string, displayName?: string): Promise<ApiK
     createdAt: Date.now(),
   };
 
+  console.log(`[addApiKey] Adding API key with id: ${id}, displayName: ${displayName || 'none'}`);
+
   // Store the key value
   if (isTauri()) {
     // Use Tauri secure storage
     await invoke('add_api_key', { key, displayName: displayName || null });
+    console.log(`[addApiKey] Stored key value in Tauri secure storage`);
   } else {
     // Use localStorage for browser mode
     localStorage.setItem(`${API_KEY_VALUES_PREFIX}${id}`, key);
+    console.log(`[addApiKey] Stored key value in localStorage with key: ${API_KEY_VALUES_PREFIX}${id}`);
   }
 
-  // Store metadata in Dexie
-  await addApiKeyMetadata(keyInfo);
+  // Store metadata in database
+  try {
+    await addApiKeyMetadata(keyInfo);
+    console.log(`[addApiKey] Stored metadata in database successfully`);
+  } catch (error) {
+    console.error('[addApiKey] Failed to store metadata in database:', error);
+    // Clean up localStorage/Tauri storage if database write failed
+    if (isTauri()) {
+      try {
+        await invoke('delete_api_key', { id });
+      } catch {
+        // Ignore cleanup errors
+      }
+    } else {
+      localStorage.removeItem(`${API_KEY_VALUES_PREFIX}${id}`);
+    }
+    throw error;
+  }
 
   return keyInfo;
 }

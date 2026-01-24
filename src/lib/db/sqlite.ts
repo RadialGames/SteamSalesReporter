@@ -57,6 +57,32 @@ export const { sql } = db;
 export type DbProgressCallback = (message: string, progress: number) => void;
 
 /**
+ * Ensure performance indexes exist (for existing databases)
+ * These covering indexes significantly speed up aggregate computations
+ */
+async function ensurePerformanceIndexes(): Promise<void> {
+  // Create covering indexes for aggregate queries if they don't exist
+  // These indexes include the aggregated columns to avoid table lookups
+  await sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_date_covering ON parsed_sales(date, gross_sales_usd, units_sold)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_app_id_covering ON parsed_sales(app_id, gross_sales_usd, units_sold, date, app_name)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_parsed_sales_country_covering ON parsed_sales(country_code, gross_sales_usd, units_sold)`;
+}
+
+/**
+ * Ensure all required tables exist (for existing databases that might have been created before all tables were added)
+ */
+async function ensureTablesExist(): Promise<void> {
+  // The api_keys table should be created by onInit, but ensure it exists for older databases
+  await sql`CREATE TABLE IF NOT EXISTS api_keys (
+    id TEXT PRIMARY KEY,
+    display_name TEXT,
+    key_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_api_keys_created_at ON api_keys(created_at)`;
+}
+
+/**
  * Initialize the database - should be called on app startup.
  * The database is automatically initialized by sqlocal on first query,
  * but this provides a hook for progress reporting.
@@ -69,6 +95,15 @@ export async function initializeDatabase(
   try {
     // Trigger initialization by running a simple query
     await sql`SELECT 1`;
+    
+    // Ensure all tables exist (for existing databases)
+    onProgress?.('Ensuring tables exist...', 40);
+    await ensureTablesExist();
+    
+    // Ensure performance indexes exist (for existing databases)
+    onProgress?.('Ensuring indexes exist...', 50);
+    await ensurePerformanceIndexes();
+    
     onProgress?.('Database ready', 100);
   } catch (error) {
     console.error('Failed to initialize database:', error);
