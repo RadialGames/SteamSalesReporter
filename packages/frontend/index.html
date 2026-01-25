@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/unicorn.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Steam Sales Analyzer - Track and analyze your Steam sales data with beautiful visualizations and detailed reports" />
+    <meta name="theme-color" content="#7c3aed" />
+    <meta name="color-scheme" content="dark" />
+    <!-- Open Graph / Social Media -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Steam Sales Analyzer" />
+    <meta property="og:description" content="Track and analyze your Steam sales data with beautiful visualizations and detailed reports" />
+    <meta property="og:image" content="/unicorn.svg" />
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Steam Sales Analyzer" />
+    <meta name="twitter:description" content="Track and analyze your Steam sales data with beautiful visualizations" />
+    <title>Steam Sales Analyzer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      /* Initial loading state - shown before Svelte mounts */
+      body {
+        margin: 0;
+        padding: 0;
+        background: linear-gradient(135deg, #581c87 0%, #6b21a8 50%, #7c3aed 100%);
+        min-height: 100vh;
+        color: white;
+        font-family: 'Nunito', sans-serif;
+        overflow: hidden;
+      }
+      #app:empty {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        position: relative;
+      }
+      /* Loading spinner */
+      #app:empty::before {
+        content: '';
+        width: 80px;
+        height: 80px;
+        border: 6px solid rgba(255, 255, 255, 0.1);
+        border-top-color: #a855f7;
+        border-right-color: #f9a8d4;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        position: absolute;
+      }
+      /* Loading text */
+      #app:empty::after {
+        content: 'Loading Steam Sales Analyzer...';
+        position: absolute;
+        margin-top: 120px;
+        color: rgba(255, 255, 255, 0.8);
+        font-size: 1.1rem;
+        font-weight: 600;
+        text-align: center;
+        animation: pulse 2s ease-in-out infinite;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.6; }
+        50% { opacity: 1; }
+      }
+      /* Stars background for loading */
+      #app:empty {
+        background: linear-gradient(135deg, #581c87 0%, #6b21a8 50%, #7c3aed 100%);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

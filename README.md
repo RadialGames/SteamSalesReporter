@@ -1,211 +1,206 @@
 # Steam Sales Analyzer
 
-A magical desktop application for Steam game developers to analyze their sales data with beautiful visualizations.
+Interactive Steam sales data analyzer with real-time charts and analysis.
 
-## Features
+## Architecture
 
-- **Interactive Dashboard**: Revenue tracking, product comparisons, and geographic insights
-- **Real-time Data**: Connect to Steam's Financial API to fetch your latest sales data
-- **Beautiful Charts**: Line charts, bar charts, and doughnut charts powered by Chart.js
-- **Data Table**: Sortable and filterable table view of all sales records
-- **Local Storage**: All data stored locally for privacy and offline access
-- **Fun Theme**: Purple gradients, rainbow accents, and unicorn animations!
+```
+steamsales/
+├── packages/
+│   └── frontend/          # Svelte + Vite frontend
+├── src-tauri/             # Tauri Rust backend
+└── package.json           # npm workspaces root
+```
+
+The application is built with **Tauri**, which provides:
+- Native system access to download and execute the CLI tool
+- Direct file system access to the database
+- Cross-platform desktop application (Windows, macOS, Linux)
+- No separate backend server required
+
+The app automatically downloads, installs, and manages the [steam-financial-cli](https://github.com/RadialGames/steam-financial-cli) tool, which fetches and stores Steam sales data in a SQLite database. The frontend loads this database and queries it directly in the browser using sql.js (SQLite compiled to WebAssembly).
 
 ## Prerequisites
 
-- A Steam Partner account with Financial API access
-- A Financial Web API Key from the [Steam Partner Portal](https://partner.steamgames.com/)
+- Node.js 20+
+- Rust (for building Tauri) - Install from [rustup.rs](https://rustup.rs/)
+- System dependencies:
+  - **macOS**: Xcode Command Line Tools
+  - **Linux**: `libwebkit2gtk-4.0-dev`, `build-essential`, `curl`, `wget`, `libssl-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`
+  - **Windows**: Microsoft Visual Studio C++ Build Tools
+
+**Note**: The CLI tool is automatically downloaded and installed by the application. You don't need to install it manually.
 
 ## Getting Started
 
-### Setup
-
-First, ensure you have npm installed. npm comes bundled with Node.js.
-
-**Check if npm is installed:**
-```bash
-npm --version
-```
-
-**If npm is not installed:**
-
-**Install Node.js (which includes npm) using one of these methods:**
-
-**Using nvm (Node Version Manager) - Recommended:**
-```bash
-# Install nvm (macOS/Linux)
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
-
-# Or using Homebrew (macOS)
-brew install nvm
-
-# Install Node.js LTS
-nvm install --lts
-nvm use --lts
-```
-
-**Using package managers:**
-```bash
-# macOS (Homebrew)
-brew install node
-
-# Linux (Ubuntu/Debian)
-sudo apt update
-sudo apt install nodejs npm
-
-# Linux (Fedora/RHEL)
-sudo dnf install nodejs npm
-
-# Windows (using Chocolatey)
-choco install nodejs
-```
-
-**Verify installation:**
-```bash
-node --version
-npm --version
-```
-
-### Installation
+### 1. Install Dependencies
 
 ```bash
-# Install dependencies
 npm install
+```
 
-# Start development server
+### 2. Development
+
+Run the Tauri development server:
+
+```bash
 npm run dev
 ```
 
-Open http://localhost:5173 in your browser.
+This will:
+- Start the Vite dev server for the frontend
+- Build and run the Tauri application
+- Open the desktop window automatically
+
+### 3. Set Up Your API Key
+
+1. When the app opens, click "Setup" in the header
+2. The setup wizard will:
+   - Automatically download the CLI tool for your platform
+   - Prompt you to enter your Steam Financial API key (from the [Steamworks Partner portal](https://partner.steamgames.com//pub/groups/))
+   - Initialize the CLI tool with your API key
+   - Fetch your sales data automatically
+   - Load the database into the application
+
+### 4. Explore Your Data
+
+Once setup is complete, you can:
+- View dashboard statistics
+- Explore charts and visualizations
+- Filter data by date, app, country, etc.
+- Refresh data by clicking "Refresh Data" in the header
+
+## Building for Production
+
+### Build the Application
+
+```bash
+npm run tauri:build
+```
+
+This will create platform-specific installers in `src-tauri/target/release/bundle/`:
+- **Windows**: `.msi` installer
+- **macOS**: `.dmg` and `.app`
+- **Linux**: `.deb`, `.AppImage`, and `.rpm`
 
 ### Development Commands
 
 ```bash
-# Development server (fast HMR)
+# Run Tauri dev mode
 npm run dev
 
+# Run web-only dev mode (for testing frontend without Tauri)
+npm run dev:web
+
 # Type checking
-npm run check
+npm run typecheck
 
-# Production build (web only)
-npm run build
+# Linting
+npm run lint
 ```
 
-## Building for Production
+### Debugging (DevTools)
 
-This project supports two build modes:
-1. **Web Build** - Static files for hosting in a browser
-2. **Desktop Build** - Native desktop app using Tauri
+In **debug builds** (e.g. `npm run dev`), the web inspector opens automatically when the app starts.
 
-### Web Build (All Platforms)
+You can also open it manually:
+- **macOS**: `Cmd + Option + I`
+- **Windows / Linux**: `Ctrl + Shift + I`
+- **Right-click** in the window and choose **Inspect Element**
 
-```bash
-npm run build
-```
+## How It Works
 
-Output files will be in the `dist/` directory. Serve with any static file server.
+1. **Tauri Backend (Rust)**: Provides native system access to:
+   - Download the CLI tool binary for your platform
+   - Execute CLI commands (`init`, `fetch`)
+   - Access the database file from the file system
 
-### Desktop Build with Tauri
+2. **Automatic CLI Management**: The Rust backend automatically downloads the appropriate CLI tool binary for your platform (Linux, macOS, or Windows) from GitHub releases.
 
-The desktop app requires Tauri prerequisites to be installed first.
+3. **API Key Configuration**: Your Steam Financial API key is stored securely by the CLI tool in its configuration.
 
-#### macOS Prerequisites
+4. **Data Fetching**: The Tauri backend executes the CLI tool's `fetch` command to download your sales data from the Steam Partner API.
 
-1. **Xcode Command Line Tools**:
-   ```bash
-   xcode-select --install
-   ```
+5. **Database Storage**: The CLI tool stores data in a SQLite database file located at `~/.steamsales/steam-financial.db`.
 
-2. **Rust** (required for Tauri):
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   source $HOME/.cargo/env
-   ```
+6. **Frontend**: The web application (Svelte) loads the SQLite database file into the browser using sql.js and queries it directly. All data processing happens client-side.
 
-3. **Verify installation**:
-   ```bash
-   rustc --version
-   cargo --version
-   ```
-
-#### macOS Build
-
-```bash
-# Development mode with hot reload
-npm run dev:tauri
-
-# Production build
-npm run build:tauri
-```
-
-The built app will be in `src-tauri/target/release/bundle/`:
-- `.app` bundle: `src-tauri/target/release/bundle/macos/`
-- `.dmg` installer: `src-tauri/target/release/bundle/dmg/`
-
-**Note**: The unsigned app works fine for local use, but distributing to other users requires code signing with an Apple Developer account.
-
-#### Windows Prerequisites
-
-1. **Microsoft Visual Studio C++ Build Tools**:
-   - Download from [Visual Studio Downloads](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-   - Run the installer and select "Desktop development with C++"
-   - Ensure "MSVC v143" and "Windows 10/11 SDK" are checked
-
-2. **WebView2** (usually pre-installed on Windows 10/11):
-   - If needed, download from [Microsoft WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
-
-3. **Rust**:
-   - Download and run [rustup-init.exe](https://win.rustup.rs/)
-   - Follow the on-screen instructions
-   - Restart your terminal after installation
-
-4. **Verify installation** (open a new terminal):
-   ```powershell
-   rustc --version
-   cargo --version
-   ```
-
-#### Windows Build
-
-```powershell
-# Development mode with hot reload
-npm run dev:tauri
-
-# Production build
-npm run build:tauri
-```
-
-The built app will be in `src-tauri\target\release\bundle\`:
-- `.exe` installer: `src-tauri\target\release\bundle\nsis\`
-- `.msi` installer: `src-tauri\target\release\bundle\msi\`
-
-### Build Troubleshooting
-
-**"cargo not found"**: Restart your terminal or run `source $HOME/.cargo/env` (macOS/Linux)
-
-**Windows build fails with linker errors**: Ensure Visual Studio Build Tools are fully installed with the C++ workload
-
-**macOS code signing**: For distribution, you'll need an Apple Developer account. For local testing, the unsigned app works fine.
-
-## Debugging
-
-For database debugging and troubleshooting, see [AI_DEBUG_GUIDE.md](./AI_DEBUG_GUIDE.md). This guide contains the database schema, useful queries, and CLI commands for inspecting the SQLite database.
-
-## Known Issues & Notes
-
-**Data Discrepancies**: Some data may be slightly lesser than what is reported on the Steam portal. The reason for this is unclear at this time. May be a glitch on Steam's end.
-
-**API Key Scope**: API keys are valid for the entire org they are issued to, not to individual users. This means you cannot filter based on various access rights. This can be problematic for publishers trying to share data with clients. Please request this feature from Valve if you wish to see it.
+7. **Updates**: Click "Refresh Data" in the header to fetch the latest data from Steam.
 
 ## Tech Stack
 
-- **Frontend**: Svelte 5, TypeScript
-- **Styling**: Tailwind CSS 4
-- **Charts**: Chart.js
-- **Build**: Vite 7
-- **Desktop**: Tauri 2
-- **Database**: SQLite (via sqlocal WASM)
+### Frontend
+- Svelte 5
+- Vite
+- TailwindCSS 4
+- Chart.js
+- sql.js (SQLite in the browser)
 
-## License
+### Backend (Tauri)
+- Rust
+- Tauri 2.0
+- Native system integration
 
-MIT
+## File Locations
+
+- **CLI Binary**: `~/.steamsales/cli/steam-financial` (or `.exe` on Windows)
+- **Database File**: `~/.steamsales/steam-financial.db`
+
+## Troubleshooting
+
+### Rust Not Installed
+
+Install Rust from [rustup.rs](https://rustup.rs/):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### System Dependencies Missing
+
+**macOS:**
+```bash
+xcode-select --install
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+sudo apt update
+sudo apt install libwebkit2gtk-4.0-dev \
+    build-essential \
+    curl \
+    wget \
+    libssl-dev \
+    libgtk-3-dev \
+    libayatana-appindicator3-dev \
+    librsvg2-dev
+```
+
+**Windows:**
+Install [Microsoft Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+
+### CLI Tool Not Downloading
+
+- Check your internet connection
+- Ensure you have write permissions to `~/.steamsales/`
+- Check the console for error messages
+
+### Database Not Loading
+
+- Check that the database file exists at `~/.steamsales/steam-financial.db`
+- Try clicking "Refresh Data" to fetch data again
+- Check the console for errors
+
+### API Key Issues
+
+- Verify your API key is correct
+- Ensure you have access to the Steam Financial API in the Steamworks Partner portal
+- Try re-initializing via the Setup wizard
+
+## Notes
+
+- The database file is loaded into browser memory, so very large databases may impact performance
+- The CLI tool handles API key management - your key is stored securely by the CLI tool
+- Data is fetched on-demand when you click "Refresh Data"
+- The setup wizard guides you through the entire setup process automatically
+- This is a desktop application - it runs natively on your system, not in a browser

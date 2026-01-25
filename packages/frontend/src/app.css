@@ -1,0 +1,386 @@
+@import 'tailwindcss';
+
+/* Custom theme variables */
+:root {
+  --purple-50: #faf5ff;
+  --purple-100: #f3e8ff;
+  --purple-200: #e9d5ff;
+  --purple-300: #d8b4fe;
+  --purple-400: #c084fc;
+  --purple-500: #a855f7;
+  --purple-600: #9333ea;
+  --purple-700: #7c3aed;
+  --purple-800: #6b21a8;
+  --purple-900: #581c87;
+
+  --rainbow-red: #ff6b6b;
+  --rainbow-orange: #feca57;
+  --rainbow-yellow: #fff56a;
+  --rainbow-green: #5ed57a;
+  --rainbow-blue: #48dbfb;
+  --rainbow-indigo: #5f27cd;
+  --rainbow-violet: #a55eea;
+  --rainbow-pink: #ff9ff3;
+}
+
+/* Base styles */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+
+body {
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  font-family: 'Nunito', sans-serif;
+  background: linear-gradient(
+    135deg,
+    var(--purple-900) 0%,
+    var(--purple-800) 50%,
+    var(--purple-700) 100%
+  );
+  color: white;
+  /* Desktop app: disable text selection globally */
+  -webkit-user-select: none;
+  user-select: none;
+  /* Desktop app: default cursor */
+  cursor: default;
+}
+
+#app {
+  min-height: 100%;
+}
+
+/* Allow text selection on data fields */
+.selectable,
+input,
+textarea,
+table td,
+pre,
+code {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
+/* Proper cursor for interactive elements */
+button,
+a,
+[role='button'],
+select {
+  cursor: pointer;
+}
+
+/* Prevent image dragging (desktop app behavior) */
+img {
+  -webkit-user-drag: none;
+  user-drag: none;
+  pointer-events: none;
+}
+
+/* Title bar drag region for window movement */
+.titlebar-drag-region {
+  -webkit-app-region: drag;
+  padding-left: 80px; /* Space for macOS traffic lights */
+}
+
+/* Exclude interactive elements from drag region */
+.titlebar-drag-region button,
+.titlebar-drag-region a,
+.titlebar-drag-region input,
+.titlebar-drag-region select,
+.titlebar-drag-region img {
+  -webkit-app-region: no-drag;
+}
+
+/* Rainbow gradient text */
+.rainbow-text {
+  background: linear-gradient(
+    90deg,
+    var(--rainbow-red),
+    var(--rainbow-orange),
+    var(--rainbow-yellow),
+    var(--rainbow-green),
+    var(--rainbow-blue),
+    var(--rainbow-violet),
+    var(--rainbow-pink)
+  );
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Rainbow border */
+.rainbow-border {
+  position: relative;
+  border-radius: 1rem;
+  padding: 3px;
+  background: linear-gradient(
+    90deg,
+    var(--rainbow-red),
+    var(--rainbow-orange),
+    var(--rainbow-yellow),
+    var(--rainbow-green),
+    var(--rainbow-blue),
+    var(--rainbow-violet),
+    var(--rainbow-pink)
+  );
+  background-size: 200% 200%;
+  animation: rainbow-rotate 4s linear infinite;
+}
+
+@keyframes rainbow-rotate {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+/* Modal inner - solid background to cover rainbow */
+.modal-inner {
+  background: rgb(88, 28, 135);
+  border-radius: calc(1rem - 3px);
+}
+
+/* Glass card effect */
+.glass-card {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 1rem;
+}
+
+/* Sparkle animation */
+@keyframes sparkle {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.sparkle {
+  animation: sparkle 1.5s ease-in-out infinite;
+}
+
+/* Unicorn bounce animation */
+@keyframes unicorn-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.unicorn-bounce {
+  animation: unicorn-bounce 1s ease-in-out infinite;
+}
+
+/* Rainbow shimmer animation */
+@keyframes rainbow-shimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.rainbow-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--rainbow-red),
+    var(--rainbow-orange),
+    var(--rainbow-yellow),
+    var(--rainbow-green),
+    var(--rainbow-blue),
+    var(--rainbow-violet),
+    var(--rainbow-pink),
+    var(--rainbow-red)
+  );
+  background-size: 200% 100%;
+  animation: rainbow-shimmer 3s linear infinite;
+}
+
+/* Button styles */
+.btn-primary {
+  background: linear-gradient(135deg, var(--purple-500) 0%, var(--purple-600) 100%);
+  color: white;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.75rem;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 15px rgba(168, 85, 247, 0.4);
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(168, 85, 247, 0.5);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
+}
+
+.btn-rainbow {
+  background: linear-gradient(
+    90deg,
+    var(--rainbow-red),
+    var(--rainbow-orange),
+    var(--rainbow-yellow),
+    var(--rainbow-green),
+    var(--rainbow-blue),
+    var(--rainbow-violet),
+    var(--rainbow-pink)
+  );
+  background-size: 200% 100%;
+  animation: rainbow-shimmer 3s linear infinite;
+  color: white;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.75rem;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.btn-rainbow:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.btn-rainbow:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  animation: none;
+  filter: grayscale(70%);
+}
+
+/* Input styles */
+.input-magic {
+  background: rgba(255, 255, 255, 0.1);
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  color: white;
+  font-size: 1rem;
+  transition: all 0.2s ease;
+}
+
+.input-magic::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.input-magic:focus {
+  outline: none;
+  border-color: var(--purple-400);
+  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.3);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--purple-500);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--purple-400);
+}
+
+/* Chart container */
+.chart-container {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Table styles */
+.magic-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.magic-table th {
+  background: rgba(255, 255, 255, 0.1);
+  padding: 1rem;
+  text-align: left;
+  font-weight: 700;
+  font-family: 'Fredoka', sans-serif;
+  border-bottom: 2px solid var(--purple-500);
+}
+
+.magic-table td {
+  padding: 0.875rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.magic-table tr:hover td {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Floating stars background */
+.stars-bg {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.star {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: white;
+  border-radius: 50%;
+  opacity: 0.5;
+  animation: twinkle 2s ease-in-out infinite;
+}
+
+@keyframes twinkle {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.2);
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "@steamsales/frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "check:rust": "cd src-tauri && cargo check",
+    "check": "npm run typecheck && npm run check:rust",
+    "lint": "eslint src --ext .ts,.svelte,.svelte.ts && prettier --check \"src/**/*.{ts,svelte,css,html}\"",
+    "lint:fix": "eslint src --ext .ts,.svelte,.svelte.ts --fix && prettier --write \"src/**/*.{ts,svelte,css,html}\"",
+    "format": "prettier --write \"src/**/*.{ts,svelte,css,html}\""
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.1",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
+    "@tauri-apps/plugin-fs": "^2.4.5",
+    "chart.js": "^4",
+    "sql.js": "^1.13.0",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9",
+    "@sveltejs/vite-plugin-svelte": "^6",
+    "@tailwindcss/vite": "^4",
+    "@tauri-apps/cli": "^2.9.6",
+    "@tsconfig/svelte": "^5",
+    "@types/node": "^22",
+    "@types/sql.js": "^1.4.9",
+    "eslint": "^9",
+    "eslint-plugin-svelte": "^3",
+    "globals": "^16",
+    "prettier": "^3",
+    "prettier-plugin-svelte": "^3",
+    "svelte": "^5",
+    "svelte-check": "^4",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "typescript-eslint": "^8",
+    "vite": "^6"
+  }
+}
