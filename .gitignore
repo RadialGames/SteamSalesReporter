@@ -1,10 +1,25 @@
 # Dependencies
 node_modules/
+**/node_modules/
+packages/*/node_modules/
+
+# Rust build artifacts (workspace-aware)
+**/src-tauri/target/
+**/target/
+*.rs.bk
+Cargo.lock
 
 # Build outputs
 dist/
 out/
 release/
+**/dist/
+**/out/
+**/release/
+.svelte-kit/
+.next/
+.nuxt/
+.cache/
 
 # Databases (never commit user data)
 *.db
@@ -13,25 +28,55 @@ release/
 *.db-shm
 *.db-wal
 
+# Data files (CSV exports, etc.)
+*.csv
+!**/test/**/*.csv
+
 # Debug logs
 .cursor/debug.log
 *.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*.sublime-project
+*.sublime-workspace
 .DS_Store
+
+# Cursor IDE
+.cursor/
 
 # Environment files
 .env
 .env.local
 .env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
 
 # OS files
 Thumbs.db
+.DS_Store
+*.DS_Store
 
-# Tauri build output
-src-tauri/target/
+# Docker volumes
+pgdata/
+
+# Package manager locks (keep root, ignore workspace)
+packages/*/package-lock.json
+packages/*/yarn.lock
+packages/*/pnpm-lock.yaml
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
