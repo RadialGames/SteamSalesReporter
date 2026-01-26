@@ -114,6 +114,8 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             get_cli_status,
+            check_cli_update,
+            get_latest_github_version,
             download_cli,
             init_cli,
             fetch_data,

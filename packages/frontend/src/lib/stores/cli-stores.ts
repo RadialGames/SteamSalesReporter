@@ -56,11 +56,11 @@ function createCliOperationsStore() {
     fetching: { subscribe: fetching.subscribe },
     error: { subscribe: error.subscribe },
 
-    async downloadCli() {
+    async downloadCli(version?: string) {
       downloading.set(true);
       error.set(null);
       try {
-        await cliApi.downloadCli();
+        await cliApi.downloadCli(version);
         await cliStatusStore.load();
       } catch (e) {
         error.set(e instanceof Error ? e.message : 'Failed to download CLI tool');

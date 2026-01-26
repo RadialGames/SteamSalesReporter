@@ -15,7 +15,11 @@ async function safeInvoke<T>(command: string, args?: Record<string, unknown>): P
     console.error(`[Tauri] ${error}`);
     throw new Error(error);
   }
-  console.log(`[Tauri] Invoking command: ${command}`, args);
+  if (args) {
+    console.log(`[Tauri] Invoking command: ${command}`, args);
+  } else {
+    console.log(`[Tauri] Invoking command: ${command}`);
+  }
   try {
     const result = await invoke<T>(command, args);
     console.log(`[Tauri] Command ${command} succeeded:`, result);
@@ -51,10 +55,36 @@ export async function getCliStatus(): Promise<CliStatus> {
   };
 }
 
+// ==================== CLI Version Check ====================
+
+export interface VersionCheck {
+  currentVersion: string | null;
+  latestVersion: string;
+  updateAvailable: boolean;
+}
+
+export async function checkCliUpdate(): Promise<VersionCheck> {
+  const result = await safeInvoke<{
+    current_version: string | null;
+    latest_version: string;
+    update_available: boolean;
+  }>('check_cli_update');
+  return {
+    currentVersion: result.current_version,
+    latestVersion: result.latest_version,
+    updateAvailable: result.update_available,
+  };
+}
+
+// Get just the latest version from GitHub (no local version check)
+export async function getLatestGithubVersion(): Promise<string> {
+  return safeInvoke<string>('get_latest_github_version');
+}
+
 // ==================== CLI Download ====================
 
-export async function downloadCli(): Promise<{ success: boolean; path: string }> {
-  const path = await safeInvoke<string>('download_cli');
+export async function downloadCli(version?: string): Promise<{ success: boolean; path: string }> {
+  const path = await safeInvoke<string>('download_cli', { version: version || null });
   return { success: true, path };
 }
 

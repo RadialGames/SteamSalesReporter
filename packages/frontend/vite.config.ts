@@ -19,6 +19,7 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    open: false, // Prevent browser from auto-opening (Tauri will open its own window)
     hmr: {
       timeout: 5000
     },

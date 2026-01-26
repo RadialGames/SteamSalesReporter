@@ -4,10 +4,11 @@
 
   interface Props {
     open: boolean;
+    version?: string | null;
     onclose?: () => void;
   }
 
-  let { open, onclose }: Props = $props();
+  let { open, version, onclose }: Props = $props();
   let progressLines = $state<string[]>([]);
   let isComplete = $state(false);
   let progressContainer: HTMLDivElement | null = $state(null);
@@ -27,13 +28,13 @@
       let completeUnsub: (() => void) | null = null;
 
       // Listen for progress events from Rust
-      listen<string>('fetch-progress', (event) => {
+      listen<string>('download-progress', (event) => {
         const line = event.payload;
         if (line) {
           progressLines = [...progressLines, line];
-          // Keep only last 8 lines for display (to prevent window getting too big)
-          if (progressLines.length > 8) {
-            progressLines = progressLines.slice(-8);
+          // Keep only last 50 lines to prevent memory issues
+          if (progressLines.length > 50) {
+            progressLines = progressLines.slice(-50);
           }
           // Auto-scroll to bottom
           if (progressContainer) {
@@ -51,11 +52,11 @@
           unsubscribeProgress = unsub;
         })
         .catch((err) => {
-          console.warn('[FetchProgressModal] Failed to set up progress listener:', err);
+          console.warn('[DownloadProgressModal] Failed to set up progress listener:', err);
         });
 
       // Listen for completion event
-      listen('fetch-complete', () => {
+      listen('download-complete', () => {
         isComplete = true;
       })
         .then((unsub) => {
@@ -63,7 +64,7 @@
           unsubscribeComplete = unsub;
         })
         .catch((err) => {
-          console.warn('[FetchProgressModal] Failed to set up complete listener:', err);
+          console.warn('[DownloadProgressModal] Failed to set up complete listener:', err);
         });
 
       // Cleanup function
@@ -73,7 +74,7 @@
             progressUnsub();
           } catch (err) {
             // Ignore cleanup errors during hot reload
-            console.debug('[FetchProgressModal] Error cleaning up progress listener:', err);
+            console.debug('[DownloadProgressModal] Error cleaning up progress listener:', err);
           }
         }
         if (completeUnsub) {
@@ -81,7 +82,7 @@
             completeUnsub();
           } catch (err) {
             // Ignore cleanup errors during hot reload
-            console.debug('[FetchProgressModal] Error cleaning up complete listener:', err);
+            console.debug('[DownloadProgressModal] Error cleaning up complete listener:', err);
           }
         }
         unsubscribeProgress = null;
@@ -94,7 +95,7 @@
           unsubscribeProgress();
         } catch (err) {
           // Ignore cleanup errors
-          console.debug('[FetchProgressModal] Error cleaning up progress listener:', err);
+          console.debug('[DownloadProgressModal] Error cleaning up progress listener:', err);
         }
         unsubscribeProgress = null;
       }
@@ -103,7 +104,7 @@
           unsubscribeComplete();
         } catch (err) {
           // Ignore cleanup errors
-          console.debug('[FetchProgressModal] Error cleaning up complete listener:', err);
+          console.debug('[DownloadProgressModal] Error cleaning up complete listener:', err);
         }
         unsubscribeComplete = null;
       }
@@ -121,22 +122,28 @@
             {#if isComplete}
               &#10024;
             {:else}
-              &#128176;
+              &#128190;
             {/if}
           </div>
           <div>
             <h2 class="text-xl font-bold font-['Fredoka'] rainbow-text">
               {#if isComplete}
-                Fetch Complete!
+                Download Complete!
               {:else}
-                Fetching Sales Data
+                Downloading CLI Tool
               {/if}
             </h2>
             <p class="text-purple-200 text-sm mt-1">
               {#if isComplete}
-                Your sales data has been downloaded successfully.
+                The CLI tool has been downloaded and installed successfully.
               {:else}
-                This may take several minutes. Please wait...
+                {#if version}
+                  Downloading latest version: <code class="text-purple-300 font-mono">v{version}</code>
+                {:else}
+                  Downloading latest version from GitHub...
+                {/if}
+                <br />
+                <span class="text-purple-300 text-xs">This may take a minute. Please wait...</span>
               {/if}
             </p>
           </div>
@@ -150,7 +157,7 @@
           >
             {#if progressLines.length === 0}
               <div class="flex items-center justify-center h-full">
-                <UnicornLoader message="Starting fetch..." />
+                <UnicornLoader message="Starting download..." />
               </div>
             {:else}
               <div class="space-y-1">

@@ -1,23 +1,61 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { get } from 'svelte/store';
   import Dashboard from '$lib/components/Dashboard.svelte';
-  import SetupWizard from '$lib/components/SetupWizard.svelte';
   import SettingsMenu from '$lib/components/SettingsMenu.svelte';
   import UnicornLoader from '$lib/components/UnicornLoader.svelte';
-  import { databaseLoaded, databaseError, setDatabaseLoaded } from '$lib/stores/sqlite-stores';
+  import DownloadProgressModal from '$lib/components/DownloadProgressModal.svelte';
+  import FetchProgressModal from '$lib/components/FetchProgressModal.svelte';
+  import { setDatabaseLoaded } from '$lib/stores/sqlite-stores';
   import { statsStore, lookupsStore } from '$lib/stores/sqlite-stores';
   import { cliStatusStore, cliOperationsStore } from '$lib/stores/cli-stores';
-  import type { CliStatus } from '$lib/api/cli-client';
+  import * as cliApi from '$lib/api/cli-client';
+  import type { VersionCheck } from '$lib/api/cli-client';
 
-  // Access nested stores directly
-  const fetchingStore = cliOperationsStore.fetching;
-  const errorStore = cliOperationsStore.error;
+  // Initialization states - strictly linear flow
+  type InitStep = 
+    | 'checking'      // Checking CLI version on GitHub and locally
+    | 'need-download' // CLI not installed or needs update
+    | 'downloading'   // Downloading CLI
+    | 'need-init'     // Need API key to initialize database
+    | 'initializing'  // Running init command
+    | 'fetching'      // Running fetch command
+    | 'ready'         // All done, show dashboard
+    | 'error';        // Something went wrong
 
-  let showSetupWizard = $state(false);
+  let step = $state<InitStep>('checking');
+  let error = $state<string | null>(null);
+  let versionInfo = $state<VersionCheck | null>(null);
+  let apiKey = $state('');
   let showSettingsMenu = $state(false);
-  let isInitialized = $state(false);
+  let showDownloadProgress = $state(false);
+  let showFetchProgress = $state(false);
   let stars: { x: number; y: number; delay: number }[] = $state([]);
+
+  // Access nested stores
+  const fetchingStore = cliOperationsStore.fetching;
+
+  // Compare semantic versions - returns true if current < latest (update available)
+  function compareVersions(current: string | null, latest: string): boolean {
+    if (!current) return true; // No current version means update needed
+    
+    const parseVersion = (v: string): number[] => {
+      // Extract version numbers, handling formats like "1.0.0", "v1.0.0", "steam-financial 1.0.0"
+      const match = v.match(/(\d+(?:\.\d+)*)/);
+      if (!match) return [0];
+      return match[1].split('.').map(n => parseInt(n, 10) || 0);
+    };
+
+    const currentParts = parseVersion(current);
+    const latestParts = parseVersion(latest);
+
+    for (let i = 0; i < Math.max(currentParts.length, latestParts.length); i++) {
+      const c = currentParts[i] || 0;
+      const l = latestParts[i] || 0;
+      if (c < l) return true;  // Update available
+      if (c > l) return false; // Current is newer (shouldn't happen normally)
+    }
+    return false; // Versions are equal
+  }
 
   onMount(async () => {
     // Generate random stars for background
@@ -27,92 +65,166 @@
       delay: Math.random() * 2,
     }));
 
-    // Check CLI status
-    try {
-      console.log('[App] Starting initialization...');
-      await cliStatusStore.load();
-      console.log('[App] CLI status loaded');
-      
-      // Get the current store value
-      const status = get(cliStatusStore);
-      console.log('[App] Status:', status);
-
-      if (status?.databaseExists) {
-        console.log('[App] Database exists - API key is stored in DB, skipping setup wizard');
-        // Database exists, which means API key is already configured
-        // Do NOT show setup wizard - user doesn't need to enter API key
-        showSetupWizard = false;
-        
-        // Mark database as loaded so Dashboard can render
-        setDatabaseLoaded(true);
-        
-        // Load initial data from existing database
-        statsStore.load().catch(e => console.warn('[App] Failed to load stats:', e));
-        lookupsStore.loadAll().catch(e => console.warn('[App] Failed to load lookups:', e));
-        
-        // Automatically fetch latest data in background to keep it up-to-date
-        // Only fetch if database exists and is valid
-        cliOperationsStore.fetchData()
-          .then(() => {
-            console.log('[App] Data fetch completed, reloading stores with fresh data...');
-            // Reload stores with fresh data after fetch completes
-            statsStore.load().catch(e => console.warn('[App] Failed to reload stats:', e));
-            lookupsStore.loadAll().catch(e => console.warn('[App] Failed to reload lookups:', e));
-          })
-          .catch((e) => {
-            // Check if error is due to missing/invalid database
-            const errorMsg = e instanceof Error ? e.message : String(e);
-            if (errorMsg.includes('Database is missing') || errorMsg.includes('not usable') || errorMsg.includes('no such table')) {
-              console.log('[App] Database is invalid or missing, will show setup wizard on next check');
-              // Database was deleted or is invalid, reset state and reload status
-              setDatabaseLoaded(false);
-              cliStatusStore.load();
-            } else {
-              console.error('[App] Failed to auto-fetch data:', e);
-              // Don't show error to user - this is a background update
-              // User can still use existing data from database
-            }
-          });
-      } else if (status && !status.installed) {
-        console.log('[App] CLI not installed, showing setup');
-        showSetupWizard = true;
-      } else if (status && !status.databaseExists) {
-        console.log('[App] Database does not exist, showing setup');
-        showSetupWizard = true;
-      } else {
-        console.log('[App] No status available, showing setup');
-        showSetupWizard = true;
-      }
-    } catch (e) {
-      console.error('[App] Failed to check CLI status:', e);
-      // Only show setup wizard if we can't determine status
-      // Don't show it if database exists but status check failed
-      const status = get(cliStatusStore);
-      if (!status?.databaseExists) {
-        showSetupWizard = true;
-        // Keep databaseLoaded as false since database doesn't exist
-      } else {
-        // Database exists, don't show setup wizard even if status check failed
-        showSetupWizard = false;
-        // Mark database as loaded so Dashboard can render
-        setDatabaseLoaded(true);
-      }
-    } finally {
-      console.log('[App] Setting isInitialized = true');
-      isInitialized = true;
-    }
+    await runInitialization();
   });
 
-  // Note: Data loading is now handled in onMount and handleSetupComplete
-  // to avoid race conditions with the setup wizard
+  async function runInitialization() {
+    step = 'checking';
+    error = null;
 
-  function handleSetupComplete() {
-    showSetupWizard = false;
-    // Mark database as loaded now that setup is complete
-    setDatabaseLoaded(true);
-    // Load initial data after setup completes
-    statsStore.load().catch(e => console.warn('[App] Failed to load stats:', e));
-    lookupsStore.loadAll().catch(e => console.warn('[App] Failed to load lookups:', e));
+    try {
+      // Step 1: Check local CLI status (fast, no network)
+      console.log('[App] Step 1: Checking local CLI status...');
+      const status = await cliApi.getCliStatus();
+      console.log('[App] Local status:', status);
+
+      // Step 2: Get latest version from GitHub (with timeout)
+      console.log('[App] Step 2: Fetching latest version from GitHub...');
+      let latestVersion: string | null = null;
+      try {
+        latestVersion = await Promise.race([
+          cliApi.getLatestGithubVersion(),
+          new Promise<never>((_, reject) => 
+            setTimeout(() => reject(new Error('GitHub request timed out')), 10000)
+          )
+        ]);
+        console.log('[App] Latest GitHub version:', latestVersion);
+      } catch (e) {
+        console.warn('[App] Failed to fetch GitHub version:', e);
+        // Continue anyway - if CLI is installed and working, we can skip the update
+      }
+
+      // Build version info for UI
+      versionInfo = {
+        currentVersion: status.version,
+        latestVersion: latestVersion || 'unknown',
+        updateAvailable: latestVersion ? compareVersions(status.version, latestVersion) : false,
+      };
+
+      // Step 3: Check if CLI needs download/update
+      if (!status.installed || status.version === null) {
+        console.log('[App] CLI not installed or version is null, need download');
+        step = 'need-download';
+        return;
+      }
+
+      // Step 4: Check if update is available (optional)
+      if (latestVersion && compareVersions(status.version, latestVersion)) {
+        console.log('[App] Update available:', status.version, '->', latestVersion);
+        step = 'need-download';
+        return;
+      }
+
+      // Step 5: Check if database exists (API key configured)
+      if (!status.databaseExists) {
+        console.log('[App] Database does not exist, need API key');
+        step = 'need-init';
+        return;
+      }
+
+      // Step 6: Run fetch to get latest data
+      await runFetch();
+
+    } catch (e) {
+      console.error('[App] Initialization error:', e);
+      error = e instanceof Error ? e.message : 'Failed to initialize';
+      step = 'error';
+    }
+  }
+
+  async function handleDownload() {
+    step = 'downloading';
+    error = null;
+    showDownloadProgress = true;
+
+    try {
+      const version = versionInfo?.latestVersion;
+      console.log('[App] Downloading CLI version:', version);
+      await cliOperationsStore.downloadCli(version);
+      showDownloadProgress = false;
+
+      // Verify download succeeded
+      const status = await cliApi.getCliStatus();
+      if (status.version === null) {
+        throw new Error('Downloaded CLI but version check failed. The file may be corrupted.');
+      }
+
+      console.log('[App] CLI downloaded successfully, version:', status.version);
+
+      // Continue initialization - check if we need API key
+      if (!status.databaseExists) {
+        step = 'need-init';
+      } else {
+        // Database exists, run fetch
+        await runFetch();
+      }
+    } catch (e) {
+      showDownloadProgress = false;
+      console.error('[App] Download error:', e);
+      error = e instanceof Error ? e.message : 'Failed to download CLI';
+      step = 'need-download'; // Back to download step so user can retry
+    }
+  }
+
+  async function handleInit() {
+    if (!apiKey.trim()) {
+      error = 'Please enter your API key';
+      return;
+    }
+
+    step = 'initializing';
+    error = null;
+
+    try {
+      console.log('[App] Initializing with API key...');
+      await cliOperationsStore.initCli(apiKey.trim());
+      console.log('[App] Init complete, starting fetch...');
+      
+      // Continue to fetch
+      await runFetch();
+    } catch (e) {
+      console.error('[App] Init error:', e);
+      error = e instanceof Error ? e.message : 'Failed to initialize';
+      step = 'need-init'; // Back to init step so user can retry
+    }
+  }
+
+  async function runFetch() {
+    step = 'fetching';
+    error = null;
+    showFetchProgress = true;
+
+    try {
+      console.log('[App] Fetching latest data...');
+      await cliOperationsStore.fetchData();
+      showFetchProgress = false;
+      
+      console.log('[App] Fetch complete, loading data...');
+      
+      // Mark database as ready and load data
+      setDatabaseLoaded(true);
+      await Promise.all([
+        statsStore.load(),
+        lookupsStore.loadAll()
+      ]);
+
+      console.log('[App] Initialization complete!');
+      step = 'ready';
+    } catch (e) {
+      showFetchProgress = false;
+      console.error('[App] Fetch error:', e);
+      error = e instanceof Error ? e.message : 'Failed to fetch data';
+      step = 'error';
+    }
+  }
+
+  function handleFetchProgressClose() {
+    showFetchProgress = false;
+    // If we're still fetching, the fetch will complete and update step
+  }
+
+  function handleDownloadProgressClose() {
+    showDownloadProgress = false;
   }
 
   function toggleSettingsMenu() {
@@ -121,6 +233,11 @@
 
   function closeSettingsMenu() {
     showSettingsMenu = false;
+  }
+
+  function retry() {
+    error = null;
+    runInitialization();
   }
 </script>
 
@@ -137,14 +254,8 @@
 
   <!-- Main content -->
   <div class="relative z-10">
-    {#if !isInitialized}
-      <div class="flex items-center justify-center min-h-screen">
-        <div class="text-center">
-          <UnicornLoader message="Initializing..." />
-        </div>
-      </div>
-    {:else}
-      <!-- Header -->
+    {#if step === 'ready'}
+      <!-- Full app with header and dashboard -->
       <header class="p-6 flex flex-wrap items-center justify-between gap-4">
         <div class="flex items-center gap-4">
           <img
@@ -177,44 +288,119 @@
         </nav>
       </header>
 
-      <!-- Error message -->
-      {#if $databaseError || $errorStore}
-        <div
-          class="mx-6 mb-4 p-4 bg-red-500/20 border border-red-500/50 rounded-lg text-red-200 select-text cursor-text"
-        >
-          <strong>Oops!</strong>{' '}
-          <span class="break-all">{$databaseError || $errorStore}</span>
-        </div>
-      {/if}
+      <main class="p-6" aria-label="Sales dashboard">
+        <Dashboard />
+      </main>
+    {:else}
+      <!-- Initialization flow - centered card -->
+      <div class="flex items-center justify-center min-h-screen p-6">
+        <div class="glass-card p-8 max-w-md w-full text-center">
+          <img
+            src="/unicorn.svg"
+            alt="Steam Sales Analyzer logo"
+            class="w-16 h-16 mx-auto mb-4 unicorn-bounce"
+          />
+          <h1 class="text-2xl font-bold font-['Fredoka'] mb-6">
+            <span class="rainbow-text">Steam Sales Analyzer</span>
+          </h1>
 
-      <!-- Dashboard -->
-      {#if $databaseLoaded}
-        <main class="p-6" aria-label="Sales dashboard">
-          <Dashboard />
-        </main>
-      {:else}
-        <main class="p-6" aria-label="Sales dashboard">
-          <div class="glass-card p-12 text-center">
-            <div class="text-8xl mb-4 unicorn-bounce inline-block">&#129412;</div>
-            <h2 class="text-2xl font-bold font-['Fredoka'] mb-2 rainbow-text">
-              Welcome to Steam Sales Analyzer!
-            </h2>
-            <p class="text-purple-200 mb-6 max-w-md mx-auto">
-              Configure your API key and download your sales data to get started.
-            </p>
-            {#if !$databaseLoaded}
-              <div class="text-purple-300 text-sm">
-                Use the Settings menu to configure your API key.
-              </div>
-            {/if}
-          </div>
-        </main>
-      {/if}
+          {#if step === 'checking'}
+            <UnicornLoader message="Checking for updates..." />
+
+          {:else if step === 'need-download'}
+            <div class="space-y-4">
+              <h2 class="text-lg font-semibold">Download CLI Tool</h2>
+              <p class="text-purple-200 text-sm">
+                {#if versionInfo?.currentVersion}
+                  A new version is available: <code class="text-purple-300">v{versionInfo.latestVersion}</code>
+                  <br /><span class="text-purple-400 text-xs">Current: v{versionInfo.currentVersion}</span>
+                {:else}
+                  The Steam Financial CLI tool needs to be installed.
+                  <br /><span class="text-purple-400 text-xs">Version: {versionInfo?.latestVersion ? `v${versionInfo.latestVersion}` : 'latest'}</span>
+                {/if}
+              </p>
+              {#if error}
+                <div class="p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-200 text-sm">
+                  {error}
+                </div>
+              {/if}
+              <button class="btn-rainbow w-full" onclick={handleDownload}>
+                Download CLI Tool
+              </button>
+            </div>
+
+          {:else if step === 'downloading'}
+            <UnicornLoader message="Downloading CLI tool..." />
+
+          {:else if step === 'need-init'}
+            <div class="space-y-4">
+              <h2 class="text-lg font-semibold">Configure API Key</h2>
+              <p class="text-purple-200 text-sm">
+                Enter your Steam Financial API key from the{' '}
+                <a
+                  href="https://partner.steamgames.com//pub/groups/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-purple-400 hover:text-purple-300 underline"
+                >
+                  Steamworks Partner portal
+                </a>.
+              </p>
+              {#if error}
+                <div class="p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-200 text-sm">
+                  {error}
+                </div>
+              {/if}
+              <input
+                type="password"
+                bind:value={apiKey}
+                placeholder="Enter your API key"
+                class="input-magic w-full"
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') handleInit();
+                }}
+              />
+              <button
+                class="btn-rainbow w-full"
+                onclick={handleInit}
+                disabled={!apiKey.trim()}
+              >
+                Save API Key
+              </button>
+            </div>
+
+          {:else if step === 'initializing'}
+            <UnicornLoader message="Saving API key..." />
+
+          {:else if step === 'fetching'}
+            <UnicornLoader message="Fetching sales data..." />
+
+          {:else if step === 'error'}
+            <div class="space-y-4">
+              <div class="text-6xl mb-2">&#128557;</div>
+              <h2 class="text-lg font-semibold text-red-300">Something went wrong</h2>
+              {#if error}
+                <div class="p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-200 text-sm text-left">
+                  {error}
+                </div>
+              {/if}
+              <button class="btn-rainbow w-full" onclick={retry}>
+                Try Again
+              </button>
+            </div>
+          {/if}
+        </div>
+      </div>
     {/if}
   </div>
 
-  <!-- Setup Wizard Modal (auto-shown on first launch when database doesn't exist) -->
-  {#if showSetupWizard}
-    <SetupWizard open={showSetupWizard} oncomplete={handleSetupComplete} />
-  {/if}
+  <!-- Download Progress Modal -->
+  <DownloadProgressModal
+    open={showDownloadProgress}
+    version={versionInfo?.latestVersion}
+    onclose={handleDownloadProgressClose}
+  />
+
+  <!-- Fetch Progress Modal -->
+  <FetchProgressModal open={showFetchProgress} onclose={handleFetchProgressClose} />
 </div>

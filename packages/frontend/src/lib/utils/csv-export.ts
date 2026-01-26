@@ -6,6 +6,7 @@
  *
  * @param headers - Array of column header strings
  * @param rows - 2D array of row data (each inner array is a row)
+ *                Values will be converted to strings and escaped automatically
  * @returns CSV formatted string
  *
  * @example
@@ -14,29 +15,59 @@
  *   [['Item 1', '100'], ['Item 2', '200']]
  * );
  */
-export function generateCsv(headers: string[], rows: string[][]): string {
+export function generateCsv(
+  headers: (string | number | null | undefined)[],
+  rows: (string | number | null | undefined)[][]
+): string {
+  // Escape all header values
   const escapedHeaders = headers.map(escapeCsvValue);
+  
+  // Escape all row values
   const escapedRows = rows.map((row) => row.map(escapeCsvValue));
-  return [escapedHeaders.join(','), ...escapedRows.map((row) => row.join(','))].join('\n');
+  
+  // Join headers and rows with commas, then join rows with newlines
+  const headerLine = escapedHeaders.join(',');
+  const rowLines = escapedRows.map((row) => row.join(','));
+  
+  const csvContent = [headerLine, ...rowLines].join('\n');
+  
+  // Add UTF-8 BOM for better Excel compatibility (especially for special characters)
+  // Excel recognizes UTF-8 BOM and will parse the CSV correctly
+  return '\uFEFF' + csvContent;
 }
 
 /**
  * Escape a value for CSV (handles quotes and special characters)
+ * Follows RFC 4180 CSV standard for proper escaping
  *
- * @param value - The value to escape
+ * @param value - The value to escape (will be converted to string)
  * @returns Properly escaped CSV value
  *
  * @example
  * escapeCsvValue('Hello, World') // '"Hello, World"'
  * escapeCsvValue('Say "Hi"') // '"Say ""Hi"""'
+ * escapeCsvValue('Product, "Special Edition"') // '"Product, ""Special Edition"""'
  */
-export function escapeCsvValue(value: string): string {
-  // If value contains comma, newline, or quote, wrap in quotes
-  if (value.includes(',') || value.includes('\n') || value.includes('"')) {
-    // Escape existing quotes by doubling them
-    return `"${value.replace(/"/g, '""')}"`;
+export function escapeCsvValue(value: string | number | null | undefined): string {
+  // Convert to string, handling null/undefined
+  const str = value == null ? '' : String(value);
+  
+  // RFC 4180: Fields containing comma, quote, or newline must be enclosed in quotes
+  // Also handle carriage return and carriage return + line feed
+  const needsQuoting = 
+    str.includes(',') || 
+    str.includes('"') || 
+    str.includes('\n') || 
+    str.includes('\r');
+  
+  if (needsQuoting) {
+    // Escape existing quotes by doubling them (RFC 4180 standard)
+    // Use a global regex to replace all occurrences
+    const escaped = str.replace(/"/g, '""');
+    return `"${escaped}"`;
   }
-  return value;
+  
+  return str;
 }
 
 /**
