@@ -401,6 +401,8 @@ pub async fn init_cli(api_key: String) -> Result<(), String> {
     let db_path = database::get_database_path();
     let db_path_str = db_path.to_string_lossy().to_string();
 
+    // v2.0.0+ format: API key is a positional argument after "init"
+    // Command: steam-financial --db <path> --color never init <api_key>
     let output = Command::new(&binary_path)
         .args(&["--db", &db_path_str, "--color", "never", "init", &api_key])
         .output()
@@ -425,6 +427,8 @@ pub async fn fetch_data(app: AppHandle, force: Option<bool>) -> Result<(), Strin
     let db_path = database::get_database_path();
     let db_path_str = db_path.to_string_lossy().to_string();
 
+    // v2.0.0+ format: --force flag (also supports -f shorthand)
+    // Command: steam-financial --db <path> --color never fetch [--force]
     let mut args = vec!["--db", &db_path_str, "--color", "never", "fetch"];
     if force.unwrap_or(false) {
         args.push("--force");

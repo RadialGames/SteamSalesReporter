@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --no-open",
     "build": "vite build",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
+    "tauri:dev:debug": "DEBUG_DEVTOOLS=1 tauri dev",
+    "dev:debug": "npm run tauri:dev:debug",
     "tauri:build": "tauri build",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "check:rust": "cd src-tauri && cargo check",

@@ -160,9 +160,12 @@ fn main() {
                 // Restore window state (plugin handles this automatically, but we ensure it's visible)
                 window.show().unwrap_or_default();
 
+                // Only open devtools if DEBUG_DEVTOOLS environment variable is set
                 #[cfg(debug_assertions)]
                 {
-                    window.open_devtools();
+                    if std::env::var("DEBUG_DEVTOOLS").is_ok() {
+                        window.open_devtools();
+                    }
                 }
 
                 // Save window state using outer_size to include devtools
