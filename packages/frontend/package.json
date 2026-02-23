@@ -27,14 +27,14 @@
     "uuid": "^13.0.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9",
+    "@eslint/js": "^10",
     "@sveltejs/vite-plugin-svelte": "^6",
     "@tailwindcss/vite": "^4",
     "@tauri-apps/cli": "^2.9.6",
     "@tsconfig/svelte": "^5",
     "@types/node": "^22",
     "@types/sql.js": "^1.4.9",
-    "eslint": "^9",
+    "eslint": "^10",
     "eslint-plugin-svelte": "^3",
     "globals": "^16",
     "prettier": "^3",
