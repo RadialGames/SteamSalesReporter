@@ -36,7 +36,7 @@
   let chartInstance: Chart | null = null;
   let hiddenRowIds = $state<Set<string>>(new Set());
 
-  const effectiveMax = $derived(Math.max(1, Math.min(365, maxDays)));
+  const effectiveMax = $derived(Math.max(1, maxDays));
   
   const dayRange = $derived(Array.from({ length: effectiveMax + 1 }, (_, i) => i));
 
@@ -64,8 +64,7 @@
     const diffTime = today.getTime() - oldestLaunchDate.getTime();
     const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
-    // Return the calculated days, capped at 365
-    return Math.min(Math.max(1, diffDays), 365);
+    return Math.max(1, diffDays);
   });
 
   function setMaxDays() {
@@ -630,7 +629,6 @@
                 id="launch-max-days"
                 type="number"
                 min="1"
-                max="365"
                 class="input-magic text-sm py-1 px-2 w-20"
                 bind:value={maxDays}
               />
